@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-Mezake Odoo MCP Server
-Uses FastMCP's built-in streamable HTTP with custom OAuth routes injected
+Mezake Odoo MCP Server — Streamable HTTP, correct FastMCP usage
 """
 
 import os, secrets, xmlrpc.client
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.requests import Request
-from starlette.routing import Route
 
 # ── Config ──────────────────────────────────────────────────────────────────
 ODOO_URL     = os.environ.get("ODOO_URL",     "https://mezake.odoo.com")
@@ -35,12 +33,77 @@ def _today():
     from datetime import date
     return date.today().isoformat()
 
-# ── MCP Server ───────────────────────────────────────────────────────────────
+# ── FastMCP — host/port in constructor, stateless for Railway ───────────────
 mcp = FastMCP(
     "Mezake Odoo",
     host="0.0.0.0",
     port=PORT,
+    stateless_http=True,
 )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OAUTH ROUTES — must use @decorator syntax
+# ══════════════════════════════════════════════════════════════════════════════
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_protected_resource(request: Request) -> JSONResponse:
+    return JSONResponse({
+        "resource": BASE_URL,
+        "authorization_servers": [BASE_URL],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["mcp"],
+    })
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_authorization_server(request: Request) -> JSONResponse:
+    return JSONResponse({
+        "issuer": BASE_URL,
+        "authorization_endpoint": f"{BASE_URL}/authorize",
+        "token_endpoint": f"{BASE_URL}/token",
+        "registration_endpoint": f"{BASE_URL}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["mcp"],
+    })
+
+@mcp.custom_route("/register", methods=["POST"])
+async def register(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse({
+        "client_id": f"claude-{secrets.token_hex(8)}",
+        "client_id_issued_at": 0,
+        "redirect_uris": body.get("redirect_uris", []),
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "client_name": body.get("client_name", "Claude"),
+        "token_endpoint_auth_method": "none",
+    }, status_code=201)
+
+@mcp.custom_route("/authorize", methods=["GET"])
+async def authorize(request: Request) -> RedirectResponse:
+    redirect_uri = request.query_params.get("redirect_uri", "")
+    state        = request.query_params.get("state", "")
+    code         = secrets.token_urlsafe(32)
+    sep = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(url=f"{redirect_uri}{sep}code={code}&state={state}", status_code=302)
+
+@mcp.custom_route("/token", methods=["POST"])
+async def token(request: Request) -> JSONResponse:
+    return JSONResponse({
+        "access_token": secrets.token_urlsafe(32),
+        "token_type": "bearer",
+        "expires_in": 2592000,
+        "scope": "mcp",
+    })
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -316,72 +379,6 @@ def get_sales_orders(status: str = "sale", partner_name: str = "", limit: int = 
         out.append(f"  {o['name']} | {o['partner_id'][1] if o.get('partner_id') else '—':<30} ${o.get('amount_total',0):>12,.2f} | {o.get('date_order','')[:10]}")
     out.append(f"\n  Total: ${total:,.2f}")
     return "\n".join(out)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OAUTH CUSTOM ROUTES — injected into FastMCP's app
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def health(request: Request):
-    return JSONResponse({"status": "ok"})
-
-async def oauth_protected_resource(request: Request):
-    return JSONResponse({
-        "resource": BASE_URL,
-        "authorization_servers": [BASE_URL],
-        "bearer_methods_supported": ["header"],
-        "scopes_supported": ["mcp"],
-    })
-
-async def oauth_authorization_server(request: Request):
-    return JSONResponse({
-        "issuer": BASE_URL,
-        "authorization_endpoint": f"{BASE_URL}/authorize",
-        "token_endpoint": f"{BASE_URL}/token",
-        "registration_endpoint": f"{BASE_URL}/register",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
-        "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
-        "scopes_supported": ["mcp"],
-    })
-
-async def register(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    return JSONResponse({
-        "client_id": f"claude-{secrets.token_hex(8)}",
-        "client_id_issued_at": 0,
-        "redirect_uris": body.get("redirect_uris", []),
-        "grant_types": ["authorization_code"],
-        "response_types": ["code"],
-        "client_name": body.get("client_name", "Claude"),
-        "token_endpoint_auth_method": "none",
-    }, status_code=201)
-
-async def authorize(request: Request):
-    redirect_uri = request.query_params.get("redirect_uri", "")
-    state        = request.query_params.get("state", "")
-    code         = secrets.token_urlsafe(32)
-    sep = "&" if "?" in redirect_uri else "?"
-    return RedirectResponse(url=f"{redirect_uri}{sep}code={code}&state={state}", status_code=302)
-
-async def token(request: Request):
-    return JSONResponse({
-        "access_token": secrets.token_urlsafe(32),
-        "token_type": "bearer",
-        "expires_in": 2592000,
-        "scope": "mcp",
-    })
-
-# Inject OAuth routes into FastMCP's router
-mcp.custom_route("/health",                                 health,                    methods=["GET"])
-mcp.custom_route("/.well-known/oauth-protected-resource",   oauth_protected_resource,  methods=["GET"])
-mcp.custom_route("/.well-known/oauth-authorization-server", oauth_authorization_server,methods=["GET"])
-mcp.custom_route("/register",                               register,                  methods=["POST"])
-mcp.custom_route("/authorize",                              authorize,                 methods=["GET"])
-mcp.custom_route("/token",                                  token,                     methods=["POST"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RUN
