@@ -16,7 +16,22 @@ ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
 PORT         = int(os.environ.get("PORT", 8000))
 BASE_URL     = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'mezake-odoo-mcp-production.up.railway.app')}"
 
-# ── Odoo helpers ────────────────────────────────────────────────────────────
+# ── Company context ─────────────────────────────────────────────────────────
+COMPANIES = {
+    "psicomed":   {"id": 2, "name": "PSICOMED SRL"},
+    "neurobloom": {"id": 3, "name": "NEUROBLOOM SRL"},
+    "jireh":      {"id": 1, "name": "Jireh"},
+    ".":          {"id": 4, "name": "."},
+}
+_active_company_id = None
+_active_company_name = "default"
+
+def _get_context():
+    if _active_company_id:
+        return {"allowed_company_ids": [_active_company_id]}
+    return {}
+
+# ── Odoo helpers ─────────────────────────────────────────────────────────────
 
 def _connect():
     common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
@@ -27,7 +42,11 @@ def _connect():
 
 def _x(model, method, args, kw=None):
     uid, m = _connect()
-    return m.execute_kw(ODOO_DB, uid, ODOO_API_KEY, model, method, args, kw or {})
+    kw = kw or {}
+    ctx = _get_context()
+    if ctx:
+        kw.setdefault("context", ctx)
+    return m.execute_kw(ODOO_DB, uid, ODOO_API_KEY, model, method, args, kw)
 
 def _today():
     from datetime import date
@@ -104,6 +123,26 @@ async def token(request: Request) -> JSONResponse:
         "expires_in": 2592000,
         "scope": "mcp",
     })
+
+
+@mcp.tool()
+def switch_company(company: str) -> str:
+    """Switch active company context. Options: psicomed, neurobloom, jireh, . (dot)"""
+    global _active_company_id, _active_company_name
+    key = company.lower().strip()
+    if key not in COMPANIES:
+        options = ", ".join(COMPANIES.keys())
+        return f"❌ Company not found. Options: {options}"
+    _active_company_id = COMPANIES[key]["id"]
+    _active_company_name = COMPANIES[key]["name"]
+    return f"✅ Now working in: {_active_company_name}"
+
+@mcp.tool()
+def get_active_company() -> str:
+    """Show which company is currently active."""
+    if _active_company_id:
+        return f"🏢 Active company: {_active_company_name} (ID: {_active_company_id})"
+    return "🏢 No company selected — showing all data."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
