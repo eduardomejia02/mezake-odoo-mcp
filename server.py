@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Mezake Odoo MCP Server
-Full OAuth 2.0 + PKCE flow for Claude.ai remote MCP connection
+Mezake Odoo MCP Server — Fixed OAuth + CORS middleware order
 """
 
 import os, secrets, xmlrpc.client, uvicorn
@@ -21,9 +20,8 @@ ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
 PORT         = int(os.environ.get("PORT", 8000))
 BASE_URL     = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'mezake-odoo-mcp-production.up.railway.app')}"
 
-# In-memory token store (good enough for single-server deploy)
-VALID_TOKENS: set = set()
-ISSUED_CODES: dict = {}  # code -> client_id
+VALID_TOKENS: set  = set()
+ISSUED_CODES: dict = {}
 
 # ── Odoo helpers ────────────────────────────────────────────────────────────
 
@@ -44,24 +42,25 @@ def _today():
 
 # ── Auth Middleware ──────────────────────────────────────────────────────────
 
-class BearerAuthMiddleware(BaseHTTPMiddleware):
-    UNPROTECTED = {
-        "/.well-known/oauth-authorization-server",
-        "/.well-known/oauth-protected-resource",
-        "/register",
-        "/authorize",
-        "/token",
-        "/health",
-    }
+UNPROTECTED_PATHS = {
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+    "/register",
+    "/authorize",
+    "/token",
+    "/health",
+}
 
+class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in self.UNPROTECTED:
+        # Always allow OPTIONS (CORS preflight) and unprotected paths
+        if request.method == "OPTIONS" or request.url.path in UNPROTECTED_PATHS:
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return Response(
-                content='{"error":"unauthorized","error_description":"Bearer token required"}',
+                '{"error":"unauthorized"}',
                 status_code=401,
                 media_type="application/json",
                 headers={"WWW-Authenticate": f'Bearer realm="{BASE_URL}"'},
@@ -69,13 +68,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         token = auth[7:].strip()
         if token not in VALID_TOKENS:
             return Response(
-                content='{"error":"invalid_token","error_description":"Token not recognized"}',
+                '{"error":"invalid_token"}',
                 status_code=401,
                 media_type="application/json",
             )
         return await call_next(request)
 
-# ── MCP Tools ────────────────────────────────────────────────────────────────
+# ── MCP Server ───────────────────────────────────────────────────────────────
 mcp = FastMCP("Mezake Odoo")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -84,7 +83,7 @@ mcp = FastMCP("Mezake Odoo")
 
 @mcp.tool()
 def get_dashboard() -> str:
-    """Full business snapshot: CRM, Accounting, Inventory, and Contacts."""
+    """Full business snapshot: CRM, Accounting, Inventory, Contacts."""
     active_leads     = _x("crm.lead",        "search_count", [[["active","=",True]]])
     won_leads        = _x("crm.lead",        "search_count", [[["stage_id.is_won","=",True],["active","=",True]]])
     open_invoices    = _x("account.move",    "search_count", [[["move_type","=","out_invoice"],["payment_state","=","not_paid"],["state","=","posted"]]])
@@ -121,7 +120,7 @@ def get_pipeline_summary() -> str:
         rev = sum(l.get("expected_revenue",0) for l in leads)
         total += rev
         lines.append(f"  {s['name']:<25} {len(leads):>4} leads   ${rev:>12,.2f}")
-    return "🎯  CRM Pipeline\n" + "─"*55 + "\n" + "\n".join(lines) + f"\n" + "─"*55 + f"\n  TOTAL{' '*20} ${total:>12,.2f}"
+    return "🎯  CRM Pipeline\n" + "─"*55 + "\n" + "\n".join(lines) + "\n" + "─"*55 + f"\n  TOTAL{' '*20} ${total:>12,.2f}"
 
 @mcp.tool()
 def search_leads(query: str = "", stage: str = "", assigned_to: str = "", limit: int = 20) -> str:
@@ -132,7 +131,7 @@ def search_leads(query: str = "", stage: str = "", assigned_to: str = "", limit:
     if assigned_to: domain.append(["user_id.name","ilike",assigned_to])
     leads = _x("crm.lead","search_read",[domain],{
         "fields":["name","partner_name","email_from","phone","stage_id",
-                  "expected_revenue","probability","user_id","create_date","source_id"],
+                  "expected_revenue","probability","user_id","create_date"],
         "limit":limit,"order":"create_date desc"})
     if not leads: return "No leads found."
     out = [f"Found {len(leads)} lead(s):\n"]
@@ -343,7 +342,7 @@ def get_sales_orders(status: str = "sale", partner_name: str = "", limit: int = 
     domain = [["state","=",status]]
     if partner_name: domain.append(["partner_id.name","ilike",partner_name])
     orders = _x("sale.order","search_read",[domain],{
-        "fields":["name","partner_id","date_order","amount_total","state"],
+        "fields":["name","partner_id","date_order","amount_total"],
         "limit":limit,"order":"date_order desc"})
     if not orders: return f"No {status} sales orders found."
     total = sum(o.get("amount_total",0) for o in orders)
@@ -386,9 +385,8 @@ async def register(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    client_id = f"claude-{secrets.token_hex(8)}"
     return JSONResponse({
-        "client_id": client_id,
+        "client_id": f"claude-{secrets.token_hex(8)}",
         "client_id_issued_at": 0,
         "redirect_uris": body.get("redirect_uris", []),
         "grant_types": ["authorization_code"],
@@ -398,18 +396,15 @@ async def register(request: Request):
     }, status_code=201)
 
 async def authorize(request: Request):
-    redirect_uri  = request.query_params.get("redirect_uri", "")
-    state         = request.query_params.get("state", "")
-    client_id     = request.query_params.get("client_id", "")
-    code          = secrets.token_urlsafe(32)
-    ISSUED_CODES[code] = client_id
+    redirect_uri = request.query_params.get("redirect_uri", "")
+    state        = request.query_params.get("state", "")
+    code         = secrets.token_urlsafe(32)
+    ISSUED_CODES[code] = True
     sep = "&" if "?" in redirect_uri else "?"
-    return RedirectResponse(
-        url=f"{redirect_uri}{sep}code={code}&state={state}",
-        status_code=302,
-    )
+    return RedirectResponse(url=f"{redirect_uri}{sep}code={code}&state={state}", status_code=302)
 
 async def token(request: Request):
+    # Accept form or JSON body
     try:
         form = await request.form()
         code = form.get("code", "")
@@ -420,10 +415,8 @@ async def token(request: Request):
         except Exception:
             code = ""
 
-    # Accept any code we issued (or any code if we can't verify)
     access_token = secrets.token_urlsafe(32)
     VALID_TOKENS.add(access_token)
-
     return JSONResponse({
         "access_token": access_token,
         "token_type": "bearer",
@@ -432,24 +425,28 @@ async def token(request: Request):
     })
 
 # ══════════════════════════════════════════════════════════════════════════════
-# APP ASSEMBLY
+# APP ASSEMBLY — middleware order matters!
+# Starlette applies middleware in REVERSE order of add_middleware calls.
+# We want: CORS (outermost) → BearerAuth → routes
+# So we add BearerAuth first, then CORS.
 # ══════════════════════════════════════════════════════════════════════════════
 
 mcp_asgi = mcp.sse_app()
 
-_routes = [
-    Route("/health",                                  health),
-    Route("/.well-known/oauth-protected-resource",    oauth_protected_resource),
-    Route("/.well-known/oauth-authorization-server",  oauth_authorization_server),
+app = Starlette(routes=[
+    Route("/health",                                 health),
+    Route("/.well-known/oauth-protected-resource",   oauth_protected_resource),
+    Route("/.well-known/oauth-authorization-server", oauth_authorization_server),
     Route("/register",  register,  methods=["POST"]),
     Route("/authorize", authorize, methods=["GET"]),
     Route("/token",     token,     methods=["POST"]),
     Mount("/",          app=mcp_asgi),
-]
+])
 
-app = Starlette(routes=_routes)
+# BearerAuth added first → runs second (inner)
+app.add_middleware(BearerAuthMiddleware)
 
-# CORS — Claude.ai makes cross-origin requests
+# CORS added second → runs first (outer), handles preflight before auth
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -457,9 +454,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
-
-# Bearer token validation
-app.add_middleware(BearerAuthMiddleware)
 
 if __name__ == "__main__":
     print(f"🚀  Mezake Odoo MCP — {BASE_URL}  port {PORT}")
