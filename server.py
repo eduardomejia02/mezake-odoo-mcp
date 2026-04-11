@@ -222,20 +222,20 @@ def search_contacts(query: str, is_company: bool = False, limit: int = 15) -> st
     domain = [["active","=",True],["is_company","=",is_company],
               "|","|",["name","ilike",query],["email","ilike",query],["phone","ilike",query]]
     contacts = _x("res.partner","search_read",[domain],{
-        "fields":["name","email","phone","mobile","city","country_id"],"limit":limit})
+        "fields":["name","email","phone","city","country_id"],"limit":limit})
     if not contacts: return "No contacts found."
     out = [f"Found {len(contacts)} contact(s):\n"]
     for c in contacts:
         out.append(f"[{c['id']}] {c['name']}\n"
-                   f"  Email: {c.get('email','—')} | Phone: {c.get('phone') or c.get('mobile','—')}\n"
+                   f"  Email: {c.get('email','—')} | Phone: {c.get('phone','—')}\n"
                    f"  Location: {c.get('city','—')}, {c['country_id'][1] if c.get('country_id') else '—'}\n")
     return "\n".join(out)
 
 @mcp.tool()
-def create_contact(name: str, email: str = "", phone: str = "", mobile: str = "",
+def create_contact(name: str, email: str = "", phone: str = "",
                    company_name: str = "", is_company: bool = False, city: str = "") -> str:
     """Create a new contact or company."""
-    vals = {"name":name,"email":email,"phone":phone,"mobile":mobile,"is_company":is_company,"city":city}
+    vals = {"name":name,"email":email,"phone":phone,"is_company":is_company,"city":city}
     if company_name and not is_company:
         co = _x("res.partner","search_read",[[["name","ilike",company_name],["is_company","=",True]]],{"fields":["id"],"limit":1})
         if co: vals["parent_id"] = co[0]["id"]
