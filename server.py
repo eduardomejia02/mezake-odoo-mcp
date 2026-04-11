@@ -23,7 +23,6 @@ COMPANIES = {
     "psicomed":   {"id": 3, "name": "PSICOMED SRL"},
     "neurobloom": {"id": 4, "name": "NEUROBLOOM SRL"},
 }
-}
 _active_company_id = None
 _active_company_name = "default"
 
