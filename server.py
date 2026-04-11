@@ -18,10 +18,11 @@ BASE_URL     = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'mezake-odoo-m
 
 # ── Company context ─────────────────────────────────────────────────────────
 COMPANIES = {
-    "psicomed":   {"id": 2, "name": "PSICOMED SRL"},
-    "neurobloom": {"id": 3, "name": "NEUROBLOOM SRL"},
-    "jireh":      {"id": 1, "name": "Jireh"},
-    ".":          {"id": 4, "name": "."},
+    ".":          {"id": 1, "name": "."},
+    "jireh":      {"id": 2, "name": "Jireh"},
+    "psicomed":   {"id": 3, "name": "PSICOMED SRL"},
+    "neurobloom": {"id": 4, "name": "NEUROBLOOM SRL"},
+}
 }
 _active_company_id = None
 _active_company_name = "default"
