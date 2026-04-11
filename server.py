@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Mezake Odoo MCP Server — Streamable HTTP transport (modern MCP standard)
+Mezake Odoo MCP Server
+Uses FastMCP's built-in streamable HTTP with custom OAuth routes injected
 """
- 
-import os, secrets, xmlrpc.client, uvicorn
+
+import os, secrets, xmlrpc.client
 from mcp.server.fastmcp import FastMCP
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.requests import Request
-from starlette.middleware.cors import CORSMiddleware
- 
+from starlette.routing import Route
+
 # ── Config ──────────────────────────────────────────────────────────────────
 ODOO_URL     = os.environ.get("ODOO_URL",     "https://mezake.odoo.com")
 ODOO_DB      = os.environ.get("ODOO_DB",      "elytekrd-mezake-produccion-14592479")
@@ -18,31 +17,35 @@ ODOO_USER    = os.environ.get("ODOO_USER",    "")
 ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
 PORT         = int(os.environ.get("PORT", 8000))
 BASE_URL     = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'mezake-odoo-mcp-production.up.railway.app')}"
- 
+
 # ── Odoo helpers ────────────────────────────────────────────────────────────
- 
+
 def _connect():
     common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
     uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_API_KEY, {})
     if not uid:
         raise RuntimeError("Odoo authentication failed.")
     return uid, xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
- 
+
 def _x(model, method, args, kw=None):
     uid, m = _connect()
     return m.execute_kw(ODOO_DB, uid, ODOO_API_KEY, model, method, args, kw or {})
- 
+
 def _today():
     from datetime import date
     return date.today().isoformat()
- 
+
 # ── MCP Server ───────────────────────────────────────────────────────────────
-mcp = FastMCP("Mezake Odoo")
- 
+mcp = FastMCP(
+    "Mezake Odoo",
+    host="0.0.0.0",
+    port=PORT,
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def get_dashboard() -> str:
     """Full business snapshot: CRM, Accounting, Inventory, Contacts."""
@@ -67,11 +70,11 @@ def get_dashboard() -> str:
     Individual Contacts          : {total_contacts}
     Companies                    : {total_companies}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CRM
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def get_pipeline_summary() -> str:
     """CRM pipeline value and lead count by stage."""
@@ -83,7 +86,7 @@ def get_pipeline_summary() -> str:
         total += rev
         lines.append(f"  {s['name']:<25} {len(leads):>4} leads   ${rev:>12,.2f}")
     return "🎯  CRM Pipeline\n" + "─"*55 + "\n" + "\n".join(lines) + "\n" + "─"*55 + f"\n  TOTAL{' '*20} ${total:>12,.2f}"
- 
+
 @mcp.tool()
 def search_leads(query: str = "", stage: str = "", assigned_to: str = "", limit: int = 20) -> str:
     """Search CRM leads by name, stage, or assigned user."""
@@ -104,7 +107,7 @@ def search_leads(query: str = "", stage: str = "", assigned_to: str = "", limit:
             f"Revenue: ${l.get('expected_revenue',0):,.2f} | Prob: {l.get('probability',0):.0f}%\n"
             f"  Owner   : {l['user_id'][1] if l.get('user_id') else 'Unassigned'}\n")
     return "\n".join(out)
- 
+
 @mcp.tool()
 def create_lead(name: str, partner_name: str, email: str = "", phone: str = "",
                 expected_revenue: float = 0.0, stage: str = "", source: str = "", notes: str = "") -> str:
@@ -119,7 +122,7 @@ def create_lead(name: str, partner_name: str, email: str = "", phone: str = "",
         if src: vals["source_id"] = src[0]["id"]
     lid = _x("crm.lead","create",[vals])
     return f"✅ Lead created | ID: {lid} | '{name}' → {partner_name}"
- 
+
 @mcp.tool()
 def update_lead(lead_id: int, stage: str = "", expected_revenue: float = None,
                 probability: float = None, notes: str = "", assign_to_email: str = "") -> str:
@@ -139,17 +142,17 @@ def update_lead(lead_id: int, stage: str = "", expected_revenue: float = None,
     if not vals: return "Nothing to update."
     _x("crm.lead","write",[[lead_id],vals])
     return f"✅ Lead {lead_id} updated: {', '.join(vals.keys())}"
- 
+
 @mcp.tool()
 def log_lead_note(lead_id: int, note: str) -> str:
     """Log a note/comment on a CRM lead."""
     _x("crm.lead","message_post",[[lead_id]],{"body":note,"message_type":"comment"})
     return f"✅ Note logged on lead {lead_id}."
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONTACTS
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def search_contacts(query: str, is_company: bool = False, limit: int = 15) -> str:
     """Search contacts or companies by name, email, or phone."""
@@ -164,7 +167,7 @@ def search_contacts(query: str, is_company: bool = False, limit: int = 15) -> st
                    f"  Email: {c.get('email','—')} | Phone: {c.get('phone') or c.get('mobile','—')}\n"
                    f"  Location: {c.get('city','—')}, {c['country_id'][1] if c.get('country_id') else '—'}\n")
     return "\n".join(out)
- 
+
 @mcp.tool()
 def create_contact(name: str, email: str = "", phone: str = "", mobile: str = "",
                    company_name: str = "", is_company: bool = False, city: str = "") -> str:
@@ -175,11 +178,11 @@ def create_contact(name: str, email: str = "", phone: str = "", mobile: str = ""
         if co: vals["parent_id"] = co[0]["id"]
     cid = _x("res.partner","create",[vals])
     return f"✅ Contact created | ID: {cid} | {name}"
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ACCOUNTING
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def get_accounting_summary() -> str:
     """Accounting overview: receivables, payables, overdue amounts."""
@@ -196,7 +199,7 @@ def get_accounting_summary() -> str:
             f"  Payable   (you owe)      : ${ap:>12,.2f}\n"
             f"  Net Position             : ${ar-ap:>12,.2f}\n"
             f"  Overdue from customers   : ${od:>12,.2f} ⚠️")
- 
+
 @mcp.tool()
 def get_invoices(status: str = "open", partner_name: str = "", limit: int = 20) -> str:
     """List customer invoices. status: open, paid, draft, overdue, all."""
@@ -217,7 +220,7 @@ def get_invoices(status: str = "open", partner_name: str = "", limit: int = 20) 
                    f"Total: ${i.get('amount_total',0):>10,.2f} | Due: ${i.get('amount_residual',0):>10,.2f} | {i.get('invoice_date_due','—')}")
     out.append(f"\n  Total Outstanding: ${total:,.2f}")
     return "\n".join(out)
- 
+
 @mcp.tool()
 def create_invoice(partner_name: str, product_name: str, quantity: float, unit_price: float, notes: str = "") -> str:
     """Create a draft customer invoice."""
@@ -229,11 +232,11 @@ def create_invoice(partner_name: str, product_name: str, quantity: float, unit_p
     inv_id = _x("account.move","create",[{"move_type":"out_invoice","partner_id":partners[0]["id"],"narration":notes,
         "invoice_line_ids":[(0,0,{"product_id":products[0]["id"],"quantity":quantity,"price_unit":price})]}])
     return f"✅ Draft invoice created | ID: {inv_id} | {partners[0]['name']} | Total: ${quantity*price:,.2f}"
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # INVENTORY
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def search_products(query: str = "", category: str = "", limit: int = 20) -> str:
     """Search products with stock levels and pricing."""
@@ -250,7 +253,7 @@ def search_products(query: str = "", category: str = "", limit: int = 20) -> str
                    f"   Stock: {p.get('qty_available',0):.0f} | Forecast: {p.get('virtual_available',0):.0f} | "
                    f"Price: ${p.get('list_price',0):,.2f} | Cost: ${p.get('standard_price',0):,.2f}\n")
     return "\n".join(out)
- 
+
 @mcp.tool()
 def get_low_stock_alert(threshold: int = 10) -> str:
     """List products at or below a stock threshold."""
@@ -262,11 +265,11 @@ def get_low_stock_alert(threshold: int = 10) -> str:
     for p in sorted(products, key=lambda x: x.get("qty_available",0)):
         out.append(f"  [{p.get('default_code','—')}] {p['name']:<40} Stock: {p.get('qty_available',0):.0f}")
     return "\n".join(out)
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # WHATSAPP
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def get_whatsapp_messages(partner_name: str = "", limit: int = 20) -> str:
     """Read recent WhatsApp conversations."""
@@ -281,7 +284,7 @@ def get_whatsapp_messages(partner_name: str = "", limit: int = 20) -> str:
         body = re.sub(r"<[^>]+>","",m.get("body","")).strip()
         out.append(f"  {m.get('date','')[:16]}  {m['author_id'][1] if m.get('author_id') else '—'}\n  {body[:120]}\n")
     return "\n".join(out)
- 
+
 @mcp.tool()
 def send_whatsapp_message(partner_name: str, message: str) -> str:
     """Send a WhatsApp message to a contact via Odoo."""
@@ -293,11 +296,11 @@ def send_whatsapp_message(partner_name: str, message: str) -> str:
     if not phone: return f"❌ No phone number for '{p['name']}'."
     _x("res.partner","message_post",[[p["id"]]],{"body":message,"message_type":"whatsapp_message"})
     return f"✅ WhatsApp sent to {p['name']} ({phone})"
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SALES ORDERS
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 @mcp.tool()
 def get_sales_orders(status: str = "sale", partner_name: str = "", limit: int = 20) -> str:
     """List sales orders. status: draft, sale, done, cancel."""
@@ -313,14 +316,14 @@ def get_sales_orders(status: str = "sale", partner_name: str = "", limit: int = 
         out.append(f"  {o['name']} | {o['partner_id'][1] if o.get('partner_id') else '—':<30} ${o.get('amount_total',0):>12,.2f} | {o.get('date_order','')[:10]}")
     out.append(f"\n  Total: ${total:,.2f}")
     return "\n".join(out)
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# OAUTH STUBS
+# OAUTH CUSTOM ROUTES — injected into FastMCP's app
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 async def health(request: Request):
     return JSONResponse({"status": "ok"})
- 
+
 async def oauth_protected_resource(request: Request):
     return JSONResponse({
         "resource": BASE_URL,
@@ -328,7 +331,7 @@ async def oauth_protected_resource(request: Request):
         "bearer_methods_supported": ["header"],
         "scopes_supported": ["mcp"],
     })
- 
+
 async def oauth_authorization_server(request: Request):
     return JSONResponse({
         "issuer": BASE_URL,
@@ -341,7 +344,7 @@ async def oauth_authorization_server(request: Request):
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["mcp"],
     })
- 
+
 async def register(request: Request):
     try:
         body = await request.json()
@@ -356,47 +359,34 @@ async def register(request: Request):
         "client_name": body.get("client_name", "Claude"),
         "token_endpoint_auth_method": "none",
     }, status_code=201)
- 
+
 async def authorize(request: Request):
     redirect_uri = request.query_params.get("redirect_uri", "")
     state        = request.query_params.get("state", "")
     code         = secrets.token_urlsafe(32)
     sep = "&" if "?" in redirect_uri else "?"
     return RedirectResponse(url=f"{redirect_uri}{sep}code={code}&state={state}", status_code=302)
- 
+
 async def token(request: Request):
-    access_token = secrets.token_urlsafe(32)
     return JSONResponse({
-        "access_token": access_token,
+        "access_token": secrets.token_urlsafe(32),
         "token_type": "bearer",
         "expires_in": 2592000,
         "scope": "mcp",
     })
- 
+
+# Inject OAuth routes into FastMCP's router
+mcp.custom_route("/health",                                 health,                    methods=["GET"])
+mcp.custom_route("/.well-known/oauth-protected-resource",   oauth_protected_resource,  methods=["GET"])
+mcp.custom_route("/.well-known/oauth-authorization-server", oauth_authorization_server,methods=["GET"])
+mcp.custom_route("/register",                               register,                  methods=["POST"])
+mcp.custom_route("/authorize",                              authorize,                 methods=["GET"])
+mcp.custom_route("/token",                                  token,                     methods=["POST"])
+
 # ══════════════════════════════════════════════════════════════════════════════
-# APP — streamable HTTP transport at /mcp
+# RUN
 # ══════════════════════════════════════════════════════════════════════════════
- 
-mcp_asgi = mcp.streamable_http_app()
- 
-app = Starlette(routes=[
-    Route("/health",                                 health),
-    Route("/.well-known/oauth-protected-resource",   oauth_protected_resource),
-    Route("/.well-known/oauth-authorization-server", oauth_authorization_server),
-    Route("/register",  register,  methods=["POST"]),
-    Route("/authorize", authorize, methods=["GET"]),
-    Route("/token",     token,     methods=["POST"]),
-    Mount("/",          app=mcp_asgi),
-])
- 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
- 
+
 if __name__ == "__main__":
-    print(f"🚀  Mezake Odoo MCP (streamable HTTP) — {BASE_URL}  port {PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    print(f"🚀  Mezake Odoo MCP — {BASE_URL}  port {PORT}")
+    mcp.run(transport="streamable-http")
