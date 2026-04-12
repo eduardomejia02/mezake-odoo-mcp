@@ -206,13 +206,17 @@ def get_pipeline_summary() -> str:
 
 @mcp.tool()
 def search_leads(query: str = "", stage: str = "", assigned_to: str = "",
-                 source: str = "", limit: int = 20) -> str:
-    """Search CRM leads by name, stage, assigned user, or source/campaign."""
+                 source: str = "", date_from: str = "", date_to: str = "",
+                 limit: int = 20) -> str:
+    """Search CRM leads by name, stage, assigned user, source/campaign, or creation date.
+    date_from / date_to: YYYY-MM-DD format."""
     domain = [["active","=",True]]
     if query:       domain.append(["name","ilike",query])
     if stage:       domain.append(["stage_id.name","ilike",stage])
     if assigned_to: domain.append(["user_id.name","ilike",assigned_to])
     if source:      domain.append(["source_id.name","ilike",source])
+    if date_from:   domain.append(["create_date",">=",date_from])
+    if date_to:     domain.append(["create_date","<=",date_to + " 23:59:59"])
     leads = _x("crm.lead", "search_read", [domain], {
         "fields": ["name","partner_name","email_from","phone","stage_id",
                    "expected_revenue","probability","user_id","create_date","source_id","medium_id"],
@@ -336,10 +340,13 @@ def get_utm_sources() -> str:
 # ════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def search_contacts(query: str, is_company: bool = False, limit: int = 15) -> str:
-    """Search contacts or companies by name, email, or phone."""
+def search_contacts(query: str, is_company: bool = False,
+                    company_name: str = "", country: str = "", limit: int = 15) -> str:
+    """Search contacts or companies by name, email, phone, parent company, or country."""
     domain = [["active","=",True],["is_company","=",is_company],
               "|","|",["name","ilike",query],["email","ilike",query],["phone","ilike",query]]
+    if company_name: domain.append(["parent_id.name","ilike",company_name])
+    if country:      domain.append(["country_id.name","ilike",country])
     contacts = _x("res.partner", "search_read", [domain], {
         "fields": ["name","email","phone","city","country_id","is_company","company_name"], "limit": limit})
     if not contacts: return "No contacts found."
@@ -405,19 +412,25 @@ def get_accounting_summary() -> str:
 
 @mcp.tool()
 def get_invoices(status: str = "open", partner_name: str = "", limit: int = 20,
-                 date_from: str = "", date_to: str = "", move_type: str = "out_invoice") -> str:
+                 date_from: str = "", date_to: str = "", move_type: str = "out_invoice",
+                 currency: str = "", min_amount: float = None, max_amount: float = None) -> str:
     """List invoices or vendor bills.
     status: open, paid, draft, overdue, all.
     move_type: out_invoice (customer invoice) or in_invoice (vendor bill).
-    date_from / date_to: YYYY-MM-DD format."""
+    date_from / date_to: YYYY-MM-DD format.
+    currency: e.g. USD, DOP, EUR.
+    min_amount / max_amount: filter by total amount."""
     domain = [["move_type","=",move_type]]
     if status == "open":      domain += [["payment_state","=","not_paid"],["state","=","posted"]]
     elif status == "paid":    domain += [["payment_state","=","paid"]]
     elif status == "draft":   domain += [["state","=","draft"]]
     elif status == "overdue": domain += [["payment_state","=","not_paid"],["state","=","posted"],["invoice_date_due","<",_today()]]
-    if partner_name: domain.append(["partner_id.name","ilike",partner_name])
-    if date_from:    domain.append(["invoice_date",">=",date_from])
-    if date_to:      domain.append(["invoice_date","<=",date_to])
+    if partner_name:                domain.append(["partner_id.name","ilike",partner_name])
+    if date_from:                   domain.append(["invoice_date",">=",date_from])
+    if date_to:                     domain.append(["invoice_date","<=",date_to])
+    if currency:                    domain.append(["currency_id.name","=",currency.upper()])
+    if min_amount is not None:      domain.append(["amount_total",">=",min_amount])
+    if max_amount is not None:      domain.append(["amount_total","<=",max_amount])
     invoices = _x("account.move", "search_read", [domain], {
         "fields": ["name","partner_id","invoice_date","invoice_date_due","amount_total","amount_residual","payment_state","state"],
         "limit": limit, "order": "invoice_date desc"})
@@ -558,10 +571,11 @@ def get_revenue_report(date_from: str, date_to: str) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def list_employees(department: str = "", limit: int = 50) -> str:
-    """List active employees, optionally filtered by department."""
+def list_employees(department: str = "", company_name: str = "", limit: int = 50) -> str:
+    """List active employees, optionally filtered by department or company."""
     domain = [["active","=",True]]
-    if department: domain.append(["department_id.name","ilike",department])
+    if department:    domain.append(["department_id.name","ilike",department])
+    if company_name:  domain.append(["company_id.name","ilike",company_name])
     employees = _x("hr.employee", "search_read", [domain], {
         "fields": ["name","job_title","department_id","work_email","work_phone","company_id"],
         "limit": limit})
@@ -632,12 +646,16 @@ def refuse_leave(leave_id: int, reason: str = "") -> str:
 
 @mcp.tool()
 def list_payslips(employee_name: str = "", date_from: str = "",
-                  date_to: str = "", status: str = "done", limit: int = 30) -> str:
-    """List payslips. status: draft, verify, done."""
+                  date_to: str = "", status: str = "done",
+                  company_name: str = "", department: str = "", limit: int = 30) -> str:
+    """List payslips. status: draft, verify, done.
+    Filter by employee, date range, company, or department."""
     domain = [["state","=",status]]
     if employee_name: domain.append(["employee_id.name","ilike",employee_name])
     if date_from:     domain.append(["date_from",">=",date_from])
     if date_to:       domain.append(["date_to","<=",date_to])
+    if company_name:  domain.append(["company_id.name","ilike",company_name])
+    if department:    domain.append(["employee_id.department_id.name","ilike",department])
     slips = _x("hr.payslip", "search_read", [domain], {
         "fields": ["employee_id","date_from","date_to","net_wage","state","company_id"],
         "limit": limit, "order": "date_from desc"})
@@ -703,11 +721,18 @@ def get_payroll_summary(date_from: str, date_to: str) -> str:
 # ════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def search_products(query: str = "", category: str = "", limit: int = 20) -> str:
-    """Search products with stock levels and pricing."""
+def search_products(query: str = "", category: str = "",
+                    min_price: float = None, max_price: float = None,
+                    in_stock_only: bool = False, limit: int = 20) -> str:
+    """Search products with stock levels and pricing.
+    min_price / max_price: filter by sale price.
+    in_stock_only: if True, only show products with stock > 0."""
     domain = [["type","in",["product","consu"]]]
-    if query:    domain.append(["name","ilike",query])
-    if category: domain.append(["categ_id.name","ilike",category])
+    if query:                  domain.append(["name","ilike",query])
+    if category:               domain.append(["categ_id.name","ilike",category])
+    if min_price is not None:  domain.append(["list_price",">=",min_price])
+    if max_price is not None:  domain.append(["list_price","<=",max_price])
+    if in_stock_only:          domain.append(["qty_available",">",0])
     products = _x("product.product", "search_read", [domain], {
         "fields": ["name","default_code","qty_available","virtual_available","list_price","standard_price","categ_id"],
         "limit": limit})
@@ -941,6 +966,11 @@ def get_sales_orders(status: str = "sale", partner_name: str = "",
 
 # ════════════════════════════════════════════════════════════════════════════
 # ENTRYPOINT
+# ════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    print(f"🚀  Odoo MCP v2.0 — {BASE_URL}  port {PORT}")
+    mcp.run(transport="streamable-http")
 # ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
