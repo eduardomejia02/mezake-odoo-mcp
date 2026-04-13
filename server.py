@@ -22,12 +22,14 @@ ODOO_URL     = os.environ.get("ODOO_URL",     "https://yourcompany.odoo.com")
 ODOO_DB      = os.environ.get("ODOO_DB",      "")
 ODOO_USER    = os.environ.get("ODOO_USER",    "")
 ODOO_API_KEY = os.environ.get("ODOO_API_KEY", "")
-PORT         = int(os.environ.get("PORT", 8000))
-BASE_URL     = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}"
+PORT              = int(os.environ.get("PORT", 8000))
+BASE_URL          = f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'localhost')}"
+ODOO_COMPANY_ID   = int(os.environ["ODOO_COMPANY_ID"]) if os.environ.get("ODOO_COMPANY_ID") else None
+ODOO_COMPANY_NAME = os.environ.get("ODOO_COMPANY_NAME", "")
 
-# ── Active company context (in-memory per session) ───────────────────────────
-_active_company_id:   int | None = None
-_active_company_name: str        = "all companies"
+# ── Company context — locked at startup via ODOO_COMPANY_ID env var ──────────
+_active_company_id:   int | None = ODOO_COMPANY_ID
+_active_company_name: str        = ODOO_COMPANY_NAME or ("All Companies" if not ODOO_COMPANY_ID else f"Company {ODOO_COMPANY_ID}")
 
 # ── Odoo connection ───────────────────────────────────────────────────────────
 
@@ -122,33 +124,11 @@ async def token(request: Request) -> JSONResponse:
 # ════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def list_companies() -> str:
-    """List all companies in this Odoo instance."""
-    companies = _x("res.company", "search_read", [[]], {"fields": ["id", "name", "email", "phone"]})
-    if not companies:
-        return "No companies found."
-    out = [f"🏢 Companies ({len(companies)})\n"]
-    for c in companies:
-        out.append(f"  [{c['id']}] {c['name']}  |  {c.get('email','—')}  |  {c.get('phone','—')}")
-    return "\n".join(out)
-
-@mcp.tool()
-def switch_company(company_name: str) -> str:
-    """Switch active company context by name (partial match). All subsequent tools will use this company."""
-    global _active_company_id, _active_company_name
-    companies = _x("res.company", "search_read", [[["name", "ilike", company_name]]], {"fields": ["id", "name"]})
-    if not companies:
-        return f"❌ No company found matching '{company_name}'. Use list_companies() to see all options."
-    _active_company_id   = companies[0]["id"]
-    _active_company_name = companies[0]["name"]
-    return f"✅ Now working in: {_active_company_name} (ID: {_active_company_id})"
-
-@mcp.tool()
 def get_active_company() -> str:
-    """Show which company is currently active."""
+    """Show which company this MCP instance is locked to."""
     if _active_company_id:
         return f"🏢 Active company: {_active_company_name} (ID: {_active_company_id})"
-    return "🏢 No company selected — showing data across all companies."
+    return "🏢 No company lock — showing data across all companies."
 
 # ════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -964,13 +944,194 @@ def get_sales_orders(status: str = "sale", partner_name: str = "",
     out.append(f"\n  Total: ${total:,.2f}")
     return "\n".join(out)
 
+
 # ════════════════════════════════════════════════════════════════════════════
-# ENTRYPOINT
+# SOCIAL MARKETING
 # ════════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
-    print(f"🚀  Odoo MCP v2.0 — {BASE_URL}  port {PORT}")
-    mcp.run(transport="streamable-http")
+@mcp.tool()
+def list_social_accounts() -> str:
+    """List all connected social media accounts in Odoo Social Marketing."""
+    try:
+        accounts = _x("social.account", "search_read", [[]], {
+            "fields": ["name","media_type","audience","followers","company_id","has_account_stats"]})
+        if not accounts: return "No social media accounts connected."
+        out = ["📱 Connected Social Accounts\n"]
+        for a in accounts:
+            out.append(
+                f"[{a['id']}] {a['name']}  ({a.get('media_type','—')})\n"
+                f"  Followers: {a.get('followers',0):,} | Audience: {a.get('audience',0):,} | "
+                f"Company: {a['company_id'][1] if a.get('company_id') else '—'}\n"
+            )
+        return "\n".join(out)
+    except Exception as e:
+        return f"⚠️ Social Marketing module error: {str(e)[:150]}"
+
+@mcp.tool()
+def list_social_campaigns(limit: int = 20) -> str:
+    """List all Social Marketing campaigns."""
+    try:
+        campaigns = _x("social.campaign", "search_read", [[]], {
+            "fields": ["name","state","tag_ids","campaign_id","post_ids"],
+            "limit": limit})
+        if not campaigns: return "No social campaigns found."
+        out = [f"📣 Social Campaigns ({len(campaigns)})\n"]
+        for c in campaigns:
+            posts = len(c.get("post_ids", []))
+            out.append(
+                f"[{c['id']}] {c['name']}\n"
+                f"  State: {c.get('state','—')} | Posts: {posts}\n"
+            )
+        return "\n".join(out)
+    except Exception as e:
+        return f"⚠️ Could not retrieve campaigns: {str(e)[:150]}"
+
+@mcp.tool()
+def create_social_campaign(name: str, utm_campaign: str = "") -> str:
+    """Create a new Social Marketing campaign.
+    utm_campaign: link to an existing UTM campaign name for lead tracking."""
+    try:
+        vals: dict = {"name": name}
+        if utm_campaign:
+            utms = _x("utm.campaign", "search_read", [[["name","ilike",utm_campaign]]], {"fields":["id"],"limit":1})
+            if utms: vals["campaign_id"] = utms[0]["id"]
+        cid = _x("social.campaign", "create", [vals])
+        return f"✅ Social campaign created | ID: {cid} | '{name}'"
+    except Exception as e:
+        return f"❌ Could not create campaign: {str(e)[:150]}"
+
+@mcp.tool()
+def list_social_posts(campaign_name: str = "", state: str = "", limit: int = 20) -> str:
+    """List social media posts.
+    state: draft, scheduled, posting, posted, failed.
+    campaign_name: filter by campaign."""
+    try:
+        domain = []
+        if state: domain.append(["state","=",state])
+        if campaign_name: domain.append(["campaign_id.name","ilike",campaign_name])
+        posts = _x("social.post", "search_read", [domain], {
+            "fields": ["message","state","account_ids","campaign_id","scheduled_date",
+                       "post_id","click_count","reach"],
+            "limit": limit, "order": "scheduled_date desc"})
+        if not posts: return "No posts found."
+        out = [f"📝 Social Posts ({len(posts)})\n"]
+        for p in posts:
+            accounts = len(p.get("account_ids", []))
+            out.append(
+                f"[{p['id']}] [{p.get('state','—').upper()}] {p.get('message','')[:80]}...\n"
+                f"  Campaign: {p['campaign_id'][1] if p.get('campaign_id') else '—'} | "
+                f"Accounts: {accounts} | Scheduled: {str(p.get('scheduled_date','—'))[:16]}\n"
+                f"  Clicks: {p.get('click_count',0)} | Reach: {p.get('reach',0)}\n"
+            )
+        return "\n".join(out)
+    except Exception as e:
+        return f"⚠️ Could not retrieve posts: {str(e)[:150]}"
+
+@mcp.tool()
+def create_social_post(message: str, account_names: str, campaign_name: str = "",
+                       scheduled_date: str = "") -> str:
+    """Create a social media post and optionally schedule it.
+    account_names: comma-separated account names e.g. 'Psicomed Facebook,Psicomed Instagram'.
+    scheduled_date: YYYY-MM-DD HH:MM:SS format, leave empty to post immediately."""
+    try:
+        # Find accounts
+        account_ids = []
+        for name in account_names.split(","):
+            accounts = _x("social.account", "search_read", [[["name","ilike",name.strip()]]], {"fields":["id","name"],"limit":1})
+            if accounts:
+                account_ids.append(accounts[0]["id"])
+        if not account_ids:
+            return f"❌ No social accounts found matching '{account_names}'. Use list_social_accounts() to see available accounts."
+        vals: dict = {
+            "message":     message,
+            "account_ids": [(6, 0, account_ids)],
+        }
+        if campaign_name:
+            campaigns = _x("social.campaign", "search_read", [[["name","ilike",campaign_name]]], {"fields":["id"],"limit":1})
+            if campaigns: vals["campaign_id"] = campaigns[0]["id"]
+        if scheduled_date:
+            vals["scheduled_date"] = scheduled_date
+        post_id = _x("social.post", "create", [vals])
+        if scheduled_date:
+            _x("social.post", "action_schedule", [[post_id]])
+            return f"✅ Post created & scheduled | ID: {post_id} | Date: {scheduled_date}"
+        else:
+            _x("social.post", "action_post", [[post_id]])
+            return f"✅ Post created & published | ID: {post_id}"
+    except Exception as e:
+        return f"❌ Could not create post: {str(e)[:150]}"
+
+@mcp.tool()
+def get_social_campaign_stats(campaign_name: str) -> str:
+    """Get stats for a Social Marketing campaign: reach, clicks, leads, revenue."""
+    try:
+        campaigns = _x("social.campaign", "search_read", [[["name","ilike",campaign_name]]], {
+            "fields": ["name","state","post_ids","campaign_id"],"limit":1})
+        if not campaigns: return f"❌ Campaign '{campaign_name}' not found."
+        c = campaigns[0]
+        posts = _x("social.post", "search_read", [[["campaign_id","=",c["id"]]]], {
+            "fields": ["message","state","click_count","reach","account_ids"]})
+        total_reach  = sum(p.get("reach", 0) for p in posts)
+        total_clicks = sum(p.get("click_count", 0) for p in posts)
+        posted  = sum(1 for p in posts if p.get("state") == "posted")
+        draft   = sum(1 for p in posts if p.get("state") == "draft")
+        # Get linked UTM leads
+        leads = 0
+        if c.get("campaign_id"):
+            leads = _x("crm.lead", "search_count", [[["campaign_id","=",c["campaign_id"][0]],["active","=",True]]])
+        out = [f"📊 Campaign Stats: {c['name']}\n{'─'*44}"]
+        out.append(f"  Posts     : {len(posts)} total ({posted} posted, {draft} draft)")
+        out.append(f"  Reach     : {total_reach:,}")
+        out.append(f"  Clicks    : {total_clicks:,}")
+        out.append(f"  CTR       : {(total_clicks/total_reach*100) if total_reach else 0:.2f}%")
+        out.append(f"  CRM Leads : {leads}")
+        return "\n".join(out)
+    except Exception as e:
+        return f"⚠️ Could not get stats: {str(e)[:150]}"
+
+@mcp.tool()
+def delete_social_post(post_id: int) -> str:
+    """Delete a draft social media post."""
+    try:
+        _x("social.post", "unlink", [[post_id]])
+        return f"✅ Post {post_id} deleted."
+    except Exception as e:
+        return f"❌ Could not delete post: {str(e)[:150]}"
+
+
+@mcp.tool()
+def explore_social_ads_fields() -> str:
+    """Explore what paid advertising fields are available in Odoo Social Marketing.
+    Use this to understand what ad capabilities exist in this Odoo instance."""
+    try:
+        # Check social.post fields for boost/paid capabilities
+        post_fields = _x("social.post", "fields_get", [], {"attributes": ["string","type","help"]})
+        boost_fields = {k: v for k, v in post_fields.items() 
+                       if any(kw in k.lower() for kw in ["boost","paid","budget","target","spend","audience","ad_"])}
+        
+        out = ["🔍 Social Marketing Paid Ad Fields\n" + "─"*50]
+        if boost_fields:
+            out.append("\nBOOST/AD fields on social.post:")
+            for fname, finfo in boost_fields.items():
+                out.append(f"  {fname} ({finfo.get('type','—')}): {finfo.get('string','—')}")
+        else:
+            out.append("\nNo boost/ad fields found on social.post")
+
+        # Check for dedicated ad models
+        for model in ["social.facebook.account", "social.post.boost", 
+                      "social.campaign.post", "social.ad"]:
+            try:
+                fields = _x(model, "fields_get", [], {"attributes": ["string"]})
+                out.append(f"\n✅ Model '{model}' exists with {len(fields)} fields")
+            except Exception:
+                out.append(f"  ❌ Model '{model}' not found")
+
+        return "\n".join(out)
+    except Exception as e:
+        return f"❌ Error: {str(e)[:200]}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENTRYPOINT
 # ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
