@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 
-from mezake_mcp.storage.db import session_scope
+from mezake_mcp.storage.db import is_enabled, session_scope
 from mezake_mcp.storage.models import OAuthToken
 
 ACCESS_TTL_SECONDS = 3600
@@ -84,6 +84,8 @@ def issue(user_id: int, scope: str = "mcp") -> IssuedTokens:
 
 def resolve_access(token: str) -> int:
     """Validate an access token and return its user_id. Raises `TokenError`."""
+    if not is_enabled():
+        raise TokenError("Authentication storage not available")
     token_hash = _hash(token)
     now = datetime.now(timezone.utc)
     with session_scope() as session:
@@ -103,6 +105,8 @@ def refresh(refresh_token: str) -> IssuedTokens:
     """Exchange a refresh token for a new (access, refresh) pair.
     Revokes the old refresh token atomically.
     """
+    if not is_enabled():
+        raise TokenError("Authentication storage not available")
     token_hash = _hash(refresh_token)
     now = datetime.now(timezone.utc)
     with session_scope() as session:

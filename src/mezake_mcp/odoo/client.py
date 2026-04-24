@@ -190,12 +190,29 @@ def get_client() -> OdooClient:
     return _instance
 
 
+# ── Request-scoped vs env-var client resolution ───────────────────────────────
+
+def get_active_client() -> "OdooClient":
+    """Return the client for the current request.
+
+    Prefers the context-scoped client set by the Bearer middleware on
+    authenticated HTTP requests. Falls back to the env-var singleton for
+    stdio transport, background jobs, and tests where no request context
+    exists.
+    """
+    # Imported lazily to avoid a module-level circular with auth.context,
+    # which imports OdooClient via TYPE_CHECKING.
+    from mezake_mcp.auth.context import current_client
+    client = current_client.get()
+    if client is not None:
+        return client
+    return get_client()
+
+
 # ── Backward-compat shims used by tools/legacy.py ─────────────────────────────
-# Delegate to the singleton so existing tools pick up UID caching, version
-# probing, and retry behavior with zero code change.
 
 def execute(model: str, method: str, args: list, kw: dict | None = None) -> Any:
-    return get_client().execute_kw(model, method, args, kw)
+    return get_active_client().execute_kw(model, method, args, kw)
 
 
 def today() -> str:

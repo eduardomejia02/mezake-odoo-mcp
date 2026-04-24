@@ -43,6 +43,9 @@ mezake-odoo-mcp/
 │   │   ├── tokens.py         Access + refresh bearer tokens
 │   │   ├── onboarding.py     HTML form + Odoo credential validation
 │   │   ├── routes.py         /authorize, /token, /register, well-known
+│   │   ├── context.py        Request-scoped ContextVars
+│   │   ├── resolver.py       user_id -> cached OdooClient
+│   │   ├── middleware.py     Bearer auth gating /mcp
 │   │   └── bootstrap.py      One-time env-var -> DB seeding
 │   ├── storage/
 │   │   ├── db.py             SQLAlchemy engine + session factory
@@ -62,7 +65,9 @@ mezake-odoo-mcp/
     ├── test_compat.py        Unit tests for version-compat helpers
     ├── test_crypto.py        Fernet round-trip, tampering, key rotation
     ├── test_onboarding.py    URL normalization, find-or-create, form render
+    ├── test_middleware.py    Bearer middleware path gating, 401 behavior, context propagation
     ├── test_pkce.py          S256 verification incl. RFC 7636 vectors
+    ├── test_resolver.py      user_id -> OdooClient cache semantics
     ├── test_storage.py       DSN normalizer + model metadata
     └── test_tokens.py        Access/refresh token issue/resolve/refresh/revoke
 ```
@@ -139,14 +144,15 @@ pytest
 - [x] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy 2.0 + Alembic migrations (auto-applied on startup). Storage is optional — server still boots without `DATABASE_URL`.
 - [x] **Phase 4a** — Auth primitives: Fernet encryption for stored API keys, PKCE (S256) verification, and one-time bootstrap that seeds the default tenant/user/connection from env vars on first startup. Requires `ENCRYPTION_KEY`.
 - [x] **Phase 4b** — Real OAuth endpoints: onboarding HTML form at `/authorize`, PKCE-bound authorization codes, access + refresh bearer tokens persisted in Postgres (as SHA-256 hashes). Hitting `/authorize` shows a form asking for Odoo URL/DB/login/API key; on submit the creds are validated against the user's Odoo and an auth code is redirected back to Claude.ai.
-- [ ] **Phase 4c** — Bearer middleware cut-over: every `/mcp` request gated by a real token; per-request `OdooClient` loaded from the user's encrypted credentials.
+- [x] **Phase 4c** — Bearer middleware enforces real tokens on every `/mcp` request. The user's `OdooConnection` is loaded on first request, decrypted, and wrapped in a per-user `OdooClient` (cached process-wide). Request-scoped `ContextVar`s carry the client into tool calls, so every Odoo action runs as the authenticated user.
 - [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.
 - [ ] **Phase 7** — Tests, docs, onboarding UI, Stripe billing integration.
 
 ## Security
 
-- As of Phase 4b, `/authorize` and `/token` implement real OAuth 2.1 + PKCE: authorization codes are PKCE-bound, single-use, and expire after 60 seconds; access tokens last 1 hour, refresh tokens 30 days; both are stored as SHA-256 hashes. **However, `/mcp` itself still accepts any bearer** — the Bearer middleware that enforces tokens on MCP traffic lands in Phase 4c. Don't treat the deployed URL as secured until then.
+- Phase 4c enforces real OAuth 2.1 + PKCE end-to-end. `/mcp` requires a valid bearer; invalid / missing / expired tokens get a 401 with `WWW-Authenticate: Bearer realm="mcp"`. Access tokens expire after 1 hour; refresh tokens last 30 days and rotate on use.
+- Every Odoo call runs as the authenticated user's Odoo login, so company access and record rules are enforced by Odoo itself — the MCP never sees or needs superuser credentials.
 - Stored Odoo API keys are encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256). Rotating `ENCRYPTION_KEY` invalidates all stored keys — users must re-authenticate.
 - Never commit credentials — always use Railway environment variables.
 - Regenerate the Odoo API key after initial setup.

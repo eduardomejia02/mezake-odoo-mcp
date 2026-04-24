@@ -12,7 +12,7 @@ import re
 
 from mezake_mcp.config import get_settings
 from mezake_mcp.mcp_instance import mcp
-from mezake_mcp.odoo.client import _today, _x, get_client
+from mezake_mcp.odoo.client import _today, _x, get_active_client
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ def get_dashboard() -> str:
     open_invoices    = _x("account.move",    "search_count", [[["move_type", "=", "out_invoice"], ["payment_state", "=", "not_paid"], ["state", "=", "posted"]]])
     overdue_invoices = _x("account.move",    "search_count", [[["move_type", "=", "out_invoice"], ["payment_state", "=", "not_paid"], ["state", "=", "posted"], ["invoice_date_due", "<", _today()]]])
     open_bills       = _x("account.move",    "search_count", [[["move_type", "=", "in_invoice"], ["payment_state", "=", "not_paid"], ["state", "=", "posted"]]])
-    low_stock_domain = get_client().stockable_domain() + [["qty_available", "<=", 5]]
+    low_stock_domain = get_active_client().stockable_domain() + [["qty_available", "<=", 5]]
     low_stock        = _x("product.product", "search_count", [low_stock_domain])
     total_contacts   = _x("res.partner",     "search_count", [[["active", "=", True], ["is_company", "=", False]]])
     total_companies  = _x("res.partner",     "search_count", [[["active", "=", True], ["is_company", "=", True]]])
@@ -657,7 +657,7 @@ def search_products(query: str = "", category: str = "",
     """Search products with stock levels and pricing.
     min_price / max_price: filter by sale price.
     in_stock_only: if True, only show products with stock > 0."""
-    domain = list(get_client().sellable_product_domain())
+    domain = list(get_active_client().sellable_product_domain())
     if query:                  domain.append(["name", "ilike", query])
     if category:               domain.append(["categ_id.name", "ilike", category])
     if min_price is not None:  domain.append(["list_price", ">=", min_price])
@@ -682,7 +682,7 @@ def search_products(query: str = "", category: str = "",
 @mcp.tool()
 def get_low_stock_alert(threshold: int = 10) -> str:
     """List all products at or below a stock threshold."""
-    domain = get_client().stockable_domain() + [["qty_available", "<=", threshold]]
+    domain = get_active_client().stockable_domain() + [["qty_available", "<=", threshold]]
     products = _x("product.product", "search_read",
                   [domain],
                   {"fields": ["name", "default_code", "qty_available", "virtual_available"], "limit": 200})

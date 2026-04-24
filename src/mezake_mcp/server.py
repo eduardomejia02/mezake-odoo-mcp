@@ -1,14 +1,12 @@
 """FastMCP server entry point.
 
 Registers tools (via `mezake_mcp.tools`) and the OAuth routes (via
-`mezake_mcp.auth.routes`) by side-effect import, then runs the
-streamable-HTTP transport.
+`mezake_mcp.auth.routes`) by side-effect import, wraps the FastMCP
+Starlette app in `BearerAuthMiddleware`, and runs uvicorn directly.
 
-The OAuth endpoints themselves are real as of Phase 4b — PKCE-bound
-authorization codes, access + refresh bearer tokens, persisted in
-Postgres. The Bearer middleware that enforces tokens on /mcp lands
-in Phase 4c; until then, /mcp still accepts any bearer so the
-existing Claude.ai connector keeps working during the cut-over.
+Phase 4c is the cut-over: `/mcp` traffic is gated by real access
+tokens issued by `/token`. `/authorize`, `/token`, `/.well-known/*`,
+`/register`, and `/health` remain public by design.
 """
 
 from __future__ import annotations
@@ -44,8 +42,6 @@ def main() -> None:
     configure_logging(s.log_level)
     log.info("Starting Odoo MCP v%s on %s (port %d)", __version__, s.base_url, s.port)
 
-    # Storage is optional until Phase 4c lands; these calls are no-ops if
-    # DATABASE_URL isn't set.
     storage_db.init()
     storage_migrate.upgrade_to_head()
 
@@ -53,4 +49,14 @@ def main() -> None:
     from mezake_mcp.auth.bootstrap import bootstrap_default_user
     bootstrap_default_user()
 
-    mcp.run(transport="streamable-http")
+    # Build the Starlette app and attach the Bearer middleware *before*
+    # handing off to uvicorn — Starlette freezes the middleware stack on
+    # first request, so this must happen here, not inside mcp.run().
+    import uvicorn
+
+    from mezake_mcp.auth.middleware import BearerAuthMiddleware
+
+    app = mcp.streamable_http_app()
+    app.add_middleware(BearerAuthMiddleware)
+
+    uvicorn.run(app, host="0.0.0.0", port=s.port, log_config=None)
