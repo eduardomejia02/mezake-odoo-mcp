@@ -36,11 +36,20 @@ mezake-odoo-mcp/
 │   ├── odoo/
 │   │   ├── client.py         OdooClient (XML-RPC, cached UID, version probe)
 │   │   └── compat.py         Cross-version behavior flags + domain helpers
+│   ├── storage/
+│   │   ├── db.py             SQLAlchemy engine + session factory
+│   │   ├── models.py         Tenant, User, OdooConnection, OAuthCode, OAuthToken, AuditLog
+│   │   └── migrate.py        Programmatic `alembic upgrade head`
 │   └── tools/
 │       ├── __init__.py       Imports all tool modules (side-effect registration)
 │       └── legacy.py         The 50 v2.0 tools, behavior-preserved
+├── alembic.ini
+├── alembic/
+│   ├── env.py                Wired to Base.metadata + DATABASE_URL
+│   └── versions/             Migration files
 └── tests/
-    └── test_compat.py        Unit tests for version-compat helpers
+    ├── test_compat.py        Unit tests for version-compat helpers
+    └── test_storage.py       Unit tests for DSN normalizer + model metadata
 ```
 
 ## Deploy to Railway
@@ -63,7 +72,17 @@ In Railway → your service → **Variables**, set:
 | `ODOO_COMPANY_NAME` | no     | friendly label for the company               |
 | `LOG_LEVEL`       | no       | `INFO` (default) / `DEBUG`                   |
 
-`PORT` and `RAILWAY_PUBLIC_DOMAIN` are injected by Railway automatically.
+`PORT` and `RAILWAY_PUBLIC_DOMAIN` are injected by Railway automatically. `DATABASE_URL` is injected when you add the Railway Postgres plugin — see **Storage** below.
+
+### Storage (Postgres)
+
+Phase 3+ uses Postgres for OAuth sessions, per-user Odoo connections, and the audit log. To attach it:
+
+1. Railway project → **+ New → Database → Add PostgreSQL**
+2. Railway auto-wires `DATABASE_URL` to your app service. Nothing to copy.
+3. Next deploy (or restart) runs `alembic upgrade head` automatically on boot, creating the schema.
+
+Until you attach Postgres, the server runs in "storage disabled" mode and behaves exactly like Phase 2.
 
 ### 3. Public domain
 
@@ -102,7 +121,7 @@ pytest
 
 - [x] **Phase 1** — Scaffolding (package layout, Dockerfile, pydantic settings, logging). Behavior-preserving.
 - [x] **Phase 2** — `OdooClient` class with UID caching + version probe + `compat` module for cross-version behavior (e.g. v17+ product.type/is_storable split). First unit tests.
-- [ ] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy + Alembic migrations.
+- [x] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy 2.0 + Alembic migrations (auto-applied on startup). Storage is optional — server still boots without `DATABASE_URL`.
 - [ ] **Phase 4** — Real OAuth 2.1 with PKCE. Each end user binds their own Odoo credentials during onboarding; all Odoo calls run as that user, so company access is enforced by Odoo itself.
 - [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.

@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
   && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
 COPY src/ ./src/
+COPY alembic/ ./alembic/
 
 RUN pip install --upgrade pip && pip install .
 

@@ -24,6 +24,8 @@ from mezake_mcp import tools  # noqa: F401 — side-effect import: registers too
 from mezake_mcp.config import get_settings
 from mezake_mcp.logging_setup import configure_logging
 from mezake_mcp.mcp_instance import mcp
+from mezake_mcp.storage import db as storage_db
+from mezake_mcp.storage import migrate as storage_migrate
 
 log = logging.getLogger(__name__)
 
@@ -106,4 +108,11 @@ def main() -> None:
     s = get_settings()
     configure_logging(s.log_level)
     log.info("Starting Odoo MCP v%s on %s (port %d)", __version__, s.base_url, s.port)
+
+    # Storage (Postgres) is optional — init() is a no-op if DATABASE_URL
+    # isn't set, and migrate.upgrade_to_head() no-ops likewise. This keeps
+    # the server bootable before the Railway Postgres plugin is attached.
+    storage_db.init()
+    storage_migrate.upgrade_to_head()
+
     mcp.run(transport="streamable-http")
