@@ -36,6 +36,10 @@ mezake-odoo-mcp/
 │   ├── odoo/
 │   │   ├── client.py         OdooClient (XML-RPC, cached UID, version probe)
 │   │   └── compat.py         Cross-version behavior flags + domain helpers
+│   ├── auth/
+│   │   ├── crypto.py         Fernet encryption for stored API keys
+│   │   ├── pkce.py           RFC 7636 S256 verification
+│   │   └── bootstrap.py      One-time env-var -> DB seeding
 │   ├── storage/
 │   │   ├── db.py             SQLAlchemy engine + session factory
 │   │   ├── models.py         Tenant, User, OdooConnection, OAuthCode, OAuthToken, AuditLog
@@ -48,8 +52,12 @@ mezake-odoo-mcp/
 │   ├── env.py                Wired to Base.metadata + DATABASE_URL
 │   └── versions/             Migration files
 └── tests/
+    ├── conftest.py           In-memory SQLite + encryption key fixtures
+    ├── test_bootstrap.py     Tests for env-var -> DB seeding
     ├── test_compat.py        Unit tests for version-compat helpers
-    └── test_storage.py       Unit tests for DSN normalizer + model metadata
+    ├── test_crypto.py        Fernet round-trip, tampering, key rotation
+    ├── test_pkce.py          S256 verification incl. RFC 7636 vectors
+    └── test_storage.py       DSN normalizer + model metadata
 ```
 
 ## Deploy to Railway
@@ -122,7 +130,9 @@ pytest
 - [x] **Phase 1** — Scaffolding (package layout, Dockerfile, pydantic settings, logging). Behavior-preserving.
 - [x] **Phase 2** — `OdooClient` class with UID caching + version probe + `compat` module for cross-version behavior (e.g. v17+ product.type/is_storable split). First unit tests.
 - [x] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy 2.0 + Alembic migrations (auto-applied on startup). Storage is optional — server still boots without `DATABASE_URL`.
-- [ ] **Phase 4** — Real OAuth 2.1 with PKCE. Each end user binds their own Odoo credentials during onboarding; all Odoo calls run as that user, so company access is enforced by Odoo itself.
+- [x] **Phase 4a** — Auth primitives: Fernet encryption for stored API keys, PKCE (S256) verification, and one-time bootstrap that seeds the default tenant/user/connection from env vars on first startup. Requires `ENCRYPTION_KEY`.
+- [ ] **Phase 4b** — OAuth endpoints: onboarding HTML form, real `/authorize`, `/token`, `/register` with PKCE.
+- [ ] **Phase 4c** — Bearer middleware cut-over: every `/mcp` request gated by a real token; per-request `OdooClient` loaded from the user's encrypted credentials.
 - [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.
 - [ ] **Phase 7** — Tests, docs, onboarding UI, Stripe billing integration.

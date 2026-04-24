@@ -115,4 +115,10 @@ def main() -> None:
     storage_db.init()
     storage_migrate.upgrade_to_head()
 
+    # Phase 4a: seed default tenant+user+connection from env vars on first
+    # boot. No-op if storage or ENCRYPTION_KEY isn't configured, or if the
+    # `users` table already has rows.
+    from mezake_mcp.auth.bootstrap import bootstrap_default_user
+    bootstrap_default_user()
+
     mcp.run(transport="streamable-http")
