@@ -34,10 +34,13 @@ mezake-odoo-mcp/
 │   ├── config.py             Pydantic settings (env-driven)
 │   ├── logging_setup.py      Logging bootstrap
 │   ├── odoo/
-│   │   └── client.py         XML-RPC wrapper (will become `OdooClient` in Phase 2)
+│   │   ├── client.py         OdooClient (XML-RPC, cached UID, version probe)
+│   │   └── compat.py         Cross-version behavior flags + domain helpers
 │   └── tools/
 │       ├── __init__.py       Imports all tool modules (side-effect registration)
-│       └── legacy.py         The 45 v2.0 tools, behavior-preserved
+│       └── legacy.py         The 50 v2.0 tools, behavior-preserved
+└── tests/
+    └── test_compat.py        Unit tests for version-compat helpers
 ```
 
 ## Deploy to Railway
@@ -90,12 +93,15 @@ python -m mezake_mcp
 
 # Smoke test
 curl http://localhost:8000/health
+
+# Run tests
+pytest
 ```
 
 ## Roadmap
 
 - [x] **Phase 1** — Scaffolding (package layout, Dockerfile, pydantic settings, logging). Behavior-preserving.
-- [ ] **Phase 2** — `OdooClient` class with UID caching, JSON-RPC option, version detection.
+- [x] **Phase 2** — `OdooClient` class with UID caching + version probe + `compat` module for cross-version behavior (e.g. v17+ product.type/is_storable split). First unit tests.
 - [ ] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy + Alembic migrations.
 - [ ] **Phase 4** — Real OAuth 2.1 with PKCE. Each end user binds their own Odoo credentials during onboarding; all Odoo calls run as that user, so company access is enforced by Odoo itself.
 - [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
