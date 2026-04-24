@@ -39,6 +39,10 @@ mezake-odoo-mcp/
 │   ├── auth/
 │   │   ├── crypto.py         Fernet encryption for stored API keys
 │   │   ├── pkce.py           RFC 7636 S256 verification
+│   │   ├── codes.py          PKCE-bound authorization codes
+│   │   ├── tokens.py         Access + refresh bearer tokens
+│   │   ├── onboarding.py     HTML form + Odoo credential validation
+│   │   ├── routes.py         /authorize, /token, /register, well-known
 │   │   └── bootstrap.py      One-time env-var -> DB seeding
 │   ├── storage/
 │   │   ├── db.py             SQLAlchemy engine + session factory
@@ -54,10 +58,13 @@ mezake-odoo-mcp/
 └── tests/
     ├── conftest.py           In-memory SQLite + encryption key fixtures
     ├── test_bootstrap.py     Tests for env-var -> DB seeding
+    ├── test_codes.py         Authorization-code issue/redeem, PKCE binding
     ├── test_compat.py        Unit tests for version-compat helpers
     ├── test_crypto.py        Fernet round-trip, tampering, key rotation
+    ├── test_onboarding.py    URL normalization, find-or-create, form render
     ├── test_pkce.py          S256 verification incl. RFC 7636 vectors
-    └── test_storage.py       DSN normalizer + model metadata
+    ├── test_storage.py       DSN normalizer + model metadata
+    └── test_tokens.py        Access/refresh token issue/resolve/refresh/revoke
 ```
 
 ## Deploy to Railway
@@ -131,7 +138,7 @@ pytest
 - [x] **Phase 2** — `OdooClient` class with UID caching + version probe + `compat` module for cross-version behavior (e.g. v17+ product.type/is_storable split). First unit tests.
 - [x] **Phase 3** — Postgres-backed storage: tenants, users, connections, tokens, audit log. SQLAlchemy 2.0 + Alembic migrations (auto-applied on startup). Storage is optional — server still boots without `DATABASE_URL`.
 - [x] **Phase 4a** — Auth primitives: Fernet encryption for stored API keys, PKCE (S256) verification, and one-time bootstrap that seeds the default tenant/user/connection from env vars on first startup. Requires `ENCRYPTION_KEY`.
-- [ ] **Phase 4b** — OAuth endpoints: onboarding HTML form, real `/authorize`, `/token`, `/register` with PKCE.
+- [x] **Phase 4b** — Real OAuth endpoints: onboarding HTML form at `/authorize`, PKCE-bound authorization codes, access + refresh bearer tokens persisted in Postgres (as SHA-256 hashes). Hitting `/authorize` shows a form asking for Odoo URL/DB/login/API key; on submit the creds are validated against the user's Odoo and an auth code is redirected back to Claude.ai.
 - [ ] **Phase 4c** — Bearer middleware cut-over: every `/mcp` request gated by a real token; per-request `OdooClient` loaded from the user's encrypted credentials.
 - [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.
@@ -139,6 +146,7 @@ pytest
 
 ## Security
 
-- The current `/authorize` and `/token` endpoints **do not validate callers** — they are placeholders that satisfy Claude.ai's MCP handshake. Treat the deployed URL as effectively public until Phase 4 lands.
+- As of Phase 4b, `/authorize` and `/token` implement real OAuth 2.1 + PKCE: authorization codes are PKCE-bound, single-use, and expire after 60 seconds; access tokens last 1 hour, refresh tokens 30 days; both are stored as SHA-256 hashes. **However, `/mcp` itself still accepts any bearer** — the Bearer middleware that enforces tokens on MCP traffic lands in Phase 4c. Don't treat the deployed URL as secured until then.
+- Stored Odoo API keys are encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256). Rotating `ENCRYPTION_KEY` invalidates all stored keys — users must re-authenticate.
 - Never commit credentials — always use Railway environment variables.
 - Regenerate the Odoo API key after initial setup.
