@@ -1,0 +1,304 @@
+"""Generic ORM tools covering every installed Odoo model.
+
+These 10 tools replace the need for per-model curated tools. Claude uses
+them to discover models, inspect schema, search / read / create / update
+/ delete records, and invoke arbitrary workflow methods — on any model
+the authenticated user has access to, including modules the MCP server
+has never heard of.
+
+All tools run as the authenticated user via `get_active_client()`, so
+Odoo's own record rules, access rules, and multi-company constraints
+are automatically enforced.
+
+Return format: every tool returns a JSON string. Many2one fields appear
+as `[id, display_name]`; x2many fields as a list of ids; missing
+relational values as `false`. These are Odoo's native wire types — we
+don't reshape them, because Claude already understands them after seeing
+a single response.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from mezake_mcp.mcp_instance import mcp
+from mezake_mcp.odoo.client import get_active_client
+
+
+def _run(model: str, method: str, args: list, kw: dict | None = None) -> Any:
+    return get_active_client().execute_kw(model, method, args, kw or {})
+
+
+def _dumps(value: Any) -> str:
+    # `default=str` catches any datetime/date that slips through; almost
+    # everything else Odoo returns is already JSON-native.
+    return json.dumps(value, default=str, ensure_ascii=False)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# DISCOVERY
+# ════════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def odoo_list_models(name_filter: str = "", limit: int = 200) -> str:
+    """List installed Odoo models. Returns JSON array of {id, model, name, modules}.
+
+    Use this as a first step when exploring what's available on an unfamiliar
+    Odoo instance. Every installed module adds rows here.
+
+    Args:
+      name_filter: partial match against either the technical name
+        (e.g. 'account.move') or the display label (e.g. 'Journal Entry').
+        Empty returns all models up to `limit`.
+      limit: max number of rows. Default 200. Cap around 1000 before Odoo
+        starts to push back on memory.
+    """
+    if name_filter:
+        domain = ["|", ["model", "ilike", name_filter], ["name", "ilike", name_filter]]
+    else:
+        domain = []
+    rows = _run(
+        "ir.model", "search_read", [domain],
+        {"fields": ["id", "model", "name", "modules"], "limit": limit, "order": "model"},
+    )
+    return _dumps(rows)
+
+
+@mcp.tool()
+def odoo_describe_model(model: str, fields: list | None = None) -> str:
+    """Return the schema for a model: for every field, the type, required
+    flag, readonly flag, help text, selection choices (for selection
+    fields), and the related model name (for relational fields).
+
+    Always call this before constructing a `search` domain or `create`
+    payload against an unfamiliar model — Odoo field names don't always
+    match what you'd guess (e.g. `account.move.partner_id`, not `customer`).
+
+    Args:
+      model: technical name, e.g. 'account.bank.statement.line'.
+      fields: optional list of field names to inspect. Omit to get every field.
+    """
+    attrs = [
+        "string", "type", "required", "readonly", "help",
+        "selection", "relation", "store", "compute", "related",
+    ]
+    schema = _run(model, "fields_get", [fields or []], {"attributes": attrs})
+    return _dumps(schema)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# READS
+# ════════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def odoo_search(
+    model: str,
+    domain: list | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    order: str = "",
+) -> str:
+    """Return IDs of records matching a domain.
+
+    Prefer `odoo_search_read` when you also need field values. Use this
+    when you only need IDs (e.g. to pass to `odoo_write`, `odoo_unlink`,
+    `odoo_call`).
+
+    Args:
+      domain: Odoo domain, e.g. [["state","=","posted"],["amount_total",">",100]].
+        Empty or omitted returns all records (bounded by `limit`).
+      limit, offset, order: standard pagination + sort.
+    """
+    kw: dict[str, Any] = {"limit": limit, "offset": offset}
+    if order:
+        kw["order"] = order
+    ids = _run(model, "search", [domain or []], kw)
+    return _dumps(ids)
+
+
+@mcp.tool()
+def odoo_search_read(
+    model: str,
+    domain: list | None = None,
+    fields: list | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "",
+) -> str:
+    """Main read tool. Returns records as JSON.
+
+    Wire format:
+      - Many2one fields:         [id, "display_name"]
+      - One2many / many2many:    [id, id, id]
+      - Missing relational:      false
+      - Date/Datetime:           string (UTC for datetimes)
+
+    Args:
+      fields: names to include. Omit for Odoo's default set (which skips
+        binary/heavy fields). Always narrow to the fields you need — full
+        record reads can be large.
+    """
+    kw: dict[str, Any] = {"limit": limit, "offset": offset}
+    if fields:
+        kw["fields"] = fields
+    if order:
+        kw["order"] = order
+    records = _run(model, "search_read", [domain or []], kw)
+    return _dumps(records)
+
+
+@mcp.tool()
+def odoo_read(model: str, ids: list, fields: list | None = None) -> str:
+    """Hydrate records by ID. Prefer `odoo_search_read` unless you already
+    have IDs in hand.
+
+    Args:
+      ids: list of integer IDs.
+      fields: names to return. Omit for the default set.
+    """
+    kw: dict[str, Any] = {}
+    if fields:
+        kw["fields"] = fields
+    records = _run(model, "read", [ids], kw)
+    return _dumps(records)
+
+
+@mcp.tool()
+def odoo_read_group(
+    model: str,
+    domain: list | None = None,
+    fields: list | None = None,
+    groupby: list | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    orderby: str = "",
+) -> str:
+    """Aggregate / group records — the tool for reports and dashboards.
+
+    Examples:
+      Revenue by month:
+        odoo_read_group(
+          'account.move',
+          [['move_type','=','out_invoice'], ['state','=','posted']],
+          ['amount_total:sum'],
+          ['invoice_date:month'])
+
+      AR by partner, top 10:
+        odoo_read_group(
+          'account.move.line',
+          [['account_id.account_type','=','asset_receivable'],
+           ['reconciled','=', false]],
+          ['balance:sum'],
+          ['partner_id'],
+          orderby='balance desc', limit=10)
+
+    Args:
+      fields: aggregate specs. `'amount:sum'` / `'amount:avg'` / `'amount:max'`
+        etc., or a plain field name for Odoo's default aggregator.
+      groupby: group keys, e.g. ['partner_id'] or ['invoice_date:month'].
+      orderby: e.g. 'balance desc'.
+    """
+    kw: dict[str, Any] = {"limit": limit, "offset": offset}
+    if orderby:
+        kw["orderby"] = orderby
+    rows = _run(model, "read_group", [domain or [], fields or [], groupby or []], kw)
+    return _dumps(rows)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# WRITES
+# ════════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def odoo_create(model: str, values: dict) -> str:
+    """Create a single record. Returns the new ID as JSON `{"id": N}`.
+
+    Call `odoo_describe_model(model)` first to confirm required fields
+    and correct field names. For relational values:
+      - Many2one: pass a single ID, e.g. {'partner_id': 42}
+      - One2many / Many2many commands (standard Odoo tuple-ops):
+          (0, 0, {field: value, ...})  — create & link a new record
+          (4, id)                      — link an existing record
+          (6, 0, [id, id, ...])        — replace the entire set
+          (5, 0)                       — unlink all
+          (3, id)                      — unlink just one
+
+    Example:
+      odoo_create('res.partner', {
+        'name': 'Acme Corp',
+        'is_company': true,
+        'email': 'billing@acme.com',
+        'category_id': [(6, 0, [7, 11])]   // set tags to 7 and 11
+      })
+    """
+    new_id = _run(model, "create", [values])
+    return _dumps({"id": new_id})
+
+
+@mcp.tool()
+def odoo_write(model: str, ids: list, values: dict) -> str:
+    """Update existing records. Applies `values` to every ID in `ids`.
+
+    Returns `{"updated": N}` on success.
+
+    Example (reassign two leads to another salesperson + add a tag):
+      odoo_write('crm.lead', [42, 43], {
+        'user_id': 7,
+        'tag_ids': [(4, 12)]
+      })
+    """
+    _run(model, "write", [ids, values])
+    return _dumps({"updated": len(ids)})
+
+
+@mcp.tool()
+def odoo_unlink(model: str, ids: list) -> str:
+    """Delete records. This is destructive — only call with explicit
+    user confirmation in the conversation. Returns `{"deleted": N}`.
+
+    Odoo will refuse deletion when records are referenced elsewhere (e.g.
+    posted invoices, invoiced sale orders). In that case, archive instead:
+      odoo_write(model, ids, {'active': false})
+    """
+    _run(model, "unlink", [ids])
+    return _dumps({"deleted": len(ids)})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CATCH-ALL
+# ════════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def odoo_call(
+    model: str,
+    method: str,
+    args: list | None = None,
+    kwargs: dict | None = None,
+) -> str:
+    """Invoke any method on any model. Use for workflow transitions,
+    button handlers, and custom methods not covered by the specific CRUD
+    tools above.
+
+    IMPORTANT: for recordset methods (most buttons / workflow actions),
+    the first element of `args` must itself be a LIST of IDs — that's
+    why you often see `[[42]]`.
+
+    Common patterns:
+      Post an invoice:
+        odoo_call('account.move', 'action_post', [[42]])
+      Confirm a sale order:
+        odoo_call('sale.order', 'action_confirm', [[10]])
+      Cancel an invoice:
+        odoo_call('account.move', 'button_cancel', [[42]])
+      Reconcile journal-entry lines:
+        odoo_call('account.move.line', 'reconcile', [[[line_id_1, line_id_2]]])
+      Post a chatter message:
+        odoo_call('crm.lead', 'message_post', [[1]], {'body': 'Hello'})
+      Validate a bank statement:
+        odoo_call('account.bank.statement', 'button_post', [[statement_id]])
+
+    Returns whatever the method returned, serialized as JSON.
+    """
+    result = _run(model, method, args or [], kwargs or {})
+    return _dumps(result)

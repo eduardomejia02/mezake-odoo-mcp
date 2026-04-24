@@ -6,6 +6,23 @@ Claude ↔ Odoo integration over the Model Context Protocol.
 
 ## What Claude can do via this MCP
 
+**Generic ORM layer (10 tools)** — covers every model installed on your Odoo:
+
+| Tool                  | Purpose                                                  |
+|-----------------------|----------------------------------------------------------|
+| `odoo_list_models`    | Discover installed models                                |
+| `odoo_describe_model` | Schema: field types, required flag, help, selections     |
+| `odoo_search`         | IDs by domain                                            |
+| `odoo_search_read`    | Records by domain                                        |
+| `odoo_read`           | Records by ID                                            |
+| `odoo_read_group`     | Aggregates / pivots                                      |
+| `odoo_create`         | Single record                                            |
+| `odoo_write`          | Update                                                   |
+| `odoo_unlink`         | Delete                                                   |
+| `odoo_call`           | Any workflow method (`action_post`, `reconcile`, …)      |
+
+**Curated tools (50)** — friendly wrappers for common flows:
+
 | Module          | Actions                                                  |
 |-----------------|----------------------------------------------------------|
 | Dashboard       | Full business snapshot                                   |
@@ -53,7 +70,8 @@ mezake-odoo-mcp/
 │   │   └── migrate.py        Programmatic `alembic upgrade head`
 │   └── tools/
 │       ├── __init__.py       Imports all tool modules (side-effect registration)
-│       └── legacy.py         The 50 v2.0 tools, behavior-preserved
+│       ├── generic.py        10 ORM primitives covering every installed model
+│       └── legacy.py         The 50 v2.0 curated tools, behavior-preserved
 ├── alembic.ini
 ├── alembic/
 │   ├── env.py                Wired to Base.metadata + DATABASE_URL
@@ -145,7 +163,7 @@ pytest
 - [x] **Phase 4a** — Auth primitives: Fernet encryption for stored API keys, PKCE (S256) verification, and one-time bootstrap that seeds the default tenant/user/connection from env vars on first startup. Requires `ENCRYPTION_KEY`.
 - [x] **Phase 4b** — Real OAuth endpoints: onboarding HTML form at `/authorize`, PKCE-bound authorization codes, access + refresh bearer tokens persisted in Postgres (as SHA-256 hashes). Hitting `/authorize` shows a form asking for Odoo URL/DB/login/API key; on submit the creds are validated against the user's Odoo and an auth code is redirected back to Claude.ai.
 - [x] **Phase 4c** — Bearer middleware enforces real tokens on every `/mcp` request. The user's `OdooConnection` is loaded on first request, decrypted, and wrapped in a per-user `OdooClient` (cached process-wide). Request-scoped `ContextVar`s carry the client into tool calls, so every Odoo action runs as the authenticated user.
-- [ ] **Phase 5** — Generic ORM tools (`odoo_search`, `odoo_create`, `odoo_call`, …) covering every module. Retire most curated tools; keep a small set of multi-step workflows (invoice payment reconciliation, lead → opportunity, etc.).
+- [x] **Phase 5** — 10 generic ORM tools (`odoo_list_models`, `odoo_describe_model`, `odoo_search`, `odoo_search_read`, `odoo_read`, `odoo_read_group`, `odoo_create`, `odoo_write`, `odoo_unlink`, `odoo_call`) that cover every installed Odoo model. Existing 50 curated tools retained for UX; Claude picks whichever is more appropriate. Total tool count: 60.
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.
 - [ ] **Phase 7** — Tests, docs, onboarding UI, Stripe billing integration.
 
