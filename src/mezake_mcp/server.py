@@ -49,6 +49,14 @@ def main() -> None:
     from mezake_mcp.auth.bootstrap import bootstrap_default_user
     bootstrap_default_user()
 
+    # Wrap every registered tool with audit logging + plan-policy
+    # enforcement. Must happen AFTER all tool modules have been imported
+    # (which we did at module top via `import tools`) and BEFORE the
+    # Starlette app is built / served, so FastMCP picks up the wrapped
+    # functions when it materializes Tool metadata.
+    from mezake_mcp.auth.wrap import wrap_all_tools
+    wrap_all_tools(mcp)
+
     # Build the Starlette app and attach the Bearer middleware *before*
     # handing off to uvicorn — Starlette freezes the middleware stack on
     # first request, so this must happen here, not inside mcp.run().
