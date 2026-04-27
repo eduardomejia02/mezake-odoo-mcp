@@ -28,7 +28,7 @@ from mezake_mcp.auth.resolver import NoConnectionError, load_client_for_user
 log = logging.getLogger(__name__)
 
 
-PROTECTED_PREFIXES = ("/mcp",)
+PROTECTED_PREFIXES = ("/mcp", "/admin")
 
 
 class BearerAuthMiddleware:

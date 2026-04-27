@@ -109,6 +109,10 @@ In Railway → your service → **Variables**, set:
 | `ODOO_COMPANY_ID` | no       | lock this deploy to one company              |
 | `ODOO_COMPANY_NAME` | no     | friendly label for the company               |
 | `LOG_LEVEL`       | no       | `INFO` (default) / `DEBUG`                   |
+| `ENCRYPTION_KEY`  | required for Phase 4+ | Fernet key (32-byte base64) |
+| `ADMIN_EMAILS`    | no       | comma-separated; gates `/admin/*` endpoints  |
+| `RATE_LIMIT_CAPACITY` | no   | burst size, default `30`                     |
+| `RATE_LIMIT_REFILL_PER_SECOND` | no | sustained rate, default `2.0` (=120/min) |
 
 `PORT` and `RAILWAY_PUBLIC_DOMAIN` are injected by Railway automatically. `DATABASE_URL` is injected when you add the Railway Postgres plugin — see **Storage** below.
 
@@ -165,6 +169,8 @@ pytest
 - [x] **Phase 4c** — Bearer middleware enforces real tokens on every `/mcp` request. The user's `OdooConnection` is loaded on first request, decrypted, and wrapped in a per-user `OdooClient` (cached process-wide). Request-scoped `ContextVar`s carry the client into tool calls, so every Odoo action runs as the authenticated user.
 - [x] **Phase 5** — 10 generic ORM tools (`odoo_list_models`, `odoo_describe_model`, `odoo_search`, `odoo_search_read`, `odoo_read`, `odoo_read_group`, `odoo_create`, `odoo_write`, `odoo_unlink`, `odoo_call`) that cover every installed Odoo model. Existing 50 curated tools retained for UX; Claude picks whichever is more appropriate. Total tool count: 60.
 - [x] **Phase 6a** — Every tool call writes one row to `audit_log` (user, tool, model, method, status, duration_ms, error). Tool calls are gated by per-plan capability tags (`free` = read-only, `pro` adds writes, `enterprise` adds destructive deletes, `self-hosted` = full). Single hook applied at startup wraps every registered tool — adding new tools is automatic.
+- [x] **Phase 6b** — Per-user token-bucket rate limiting (default capacity 30, sustained 120/min, tunable via env). 429 with Retry-After when exceeded. Bucket allocation is per `user_id`, applied after Bearer auth succeeds.
+- [x] **Phase 6c** — `GET /admin/audit` and `GET /admin/tenants` admin endpoints. Auth = Bearer token + email in `ADMIN_EMAILS` env var (case-insensitive). Filters: `?since`, `?user_id`, `?tool`, `?status`, `?limit`. Read-only for now; mutating ops (plan changes, revocation) come in Phase 7 with Stripe.
 - [ ] **Phase 6** — Per-tenant rate limiting, audit log admin endpoint, tool allow-lists per plan.
 - [ ] **Phase 7** — Tests, docs, onboarding UI, Stripe billing integration.
 

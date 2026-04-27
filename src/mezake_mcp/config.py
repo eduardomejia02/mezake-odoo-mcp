@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     rate_limit_capacity: int = 30
     rate_limit_refill_per_second: float = 2.0
 
+    # ── Admin (Phase 6c) ──────────────────────────────────────────────────────
+    # Comma-separated list of email addresses with access to /admin/*
+    # endpoints. Empty (default) means no admin endpoints are reachable.
+    # Match is case-insensitive on the user's stored email.
+    admin_emails: str = ""
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        if not self.admin_emails:
+            return set()
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
     @property
     def base_url(self) -> str:
         if self.railway_public_domain in ("localhost", ""):

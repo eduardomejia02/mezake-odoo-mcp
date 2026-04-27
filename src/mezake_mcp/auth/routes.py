@@ -22,8 +22,10 @@ import secrets
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from mezake_mcp import audit
 from mezake_mcp.auth import codes as auth_codes
 from mezake_mcp.auth import onboarding, tokens
+from mezake_mcp.auth.admin import is_current_user_admin
 from mezake_mcp.auth.onboarding import (
     OnboardingError,
     OnboardingInput,
@@ -32,6 +34,8 @@ from mezake_mcp.auth.onboarding import (
 )
 from mezake_mcp.config import get_settings
 from mezake_mcp.mcp_instance import mcp
+from mezake_mcp.storage.db import session_scope
+from mezake_mcp.storage.models import Tenant, User
 
 log = logging.getLogger(__name__)
 
@@ -238,3 +242,95 @@ def _token_response(issued: tokens.IssuedTokens) -> JSONResponse:
 
 def _token_error(code: str, description: str) -> JSONResponse:
     return JSONResponse({"error": code, "error_description": description}, status_code=400)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# /admin
+# ════════════════════════════════════════════════════════════════════════════
+# Gated by:
+#   1. The Bearer middleware (authenticated user_id required) — same as /mcp
+#   2. `is_current_user_admin()` — user's email must be in ADMIN_EMAILS env
+#      var. Returns 403 otherwise.
+#
+# The first-pass surface is read-only (audit + tenants list). Mutating
+# operations (plan changes, revocation, ban) come in Phase 7 alongside
+# billing.
+
+def _forbidden() -> JSONResponse:
+    return JSONResponse({"error": "forbidden"}, status_code=403)
+
+
+@mcp.custom_route("/admin/audit", methods=["GET"])
+async def admin_audit(request: Request) -> JSONResponse:
+    """Return recent audit events. Filters: ?since=ISO8601, ?user_id=N,
+    ?tool=name, ?status=ok|error|denied, ?limit=N (max 1000)."""
+    if not is_current_user_admin():
+        return _forbidden()
+
+    from datetime import datetime
+
+    qp = request.query_params
+    since_raw = qp.get("since")
+    since: datetime | None = None
+    if since_raw:
+        try:
+            since = datetime.fromisoformat(since_raw)
+        except ValueError:
+            return JSONResponse(
+                {"error": "invalid_request",
+                 "error_description": "since must be ISO 8601"},
+                status_code=400,
+            )
+
+    user_id_raw = qp.get("user_id")
+    user_id: int | None = None
+    if user_id_raw:
+        try:
+            user_id = int(user_id_raw)
+        except ValueError:
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "user_id must be int"},
+                status_code=400,
+            )
+
+    rows = audit.list_recent(
+        limit=int(qp.get("limit", 100) or 100),
+        since=since,
+        user_id=user_id,
+        tool_name=qp.get("tool"),
+        status=qp.get("status"),
+    )
+    return JSONResponse({"events": rows, "count": len(rows)})
+
+
+@mcp.custom_route("/admin/tenants", methods=["GET"])
+async def admin_tenants(_: Request) -> JSONResponse:
+    """List tenants with user counts."""
+    if not is_current_user_admin():
+        return _forbidden()
+
+    from sqlalchemy import func, select
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(
+                Tenant.id, Tenant.name, Tenant.plan,
+                Tenant.billing_customer_id, Tenant.created_at,
+                func.count(User.id).label("user_count"),
+            )
+            .join(User, User.tenant_id == Tenant.id, isouter=True)
+            .group_by(Tenant.id)
+            .order_by(Tenant.id)
+        ).all()
+        tenants = [
+            {
+                "id": r.id,
+                "name": r.name,
+                "plan": r.plan,
+                "billing_customer_id": r.billing_customer_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "user_count": r.user_count,
+            }
+            for r in rows
+        ]
+    return JSONResponse({"tenants": tenants, "count": len(tenants)})
