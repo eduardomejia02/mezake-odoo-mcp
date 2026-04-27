@@ -22,6 +22,7 @@ import logging
 
 from mezake_mcp.auth import tokens
 from mezake_mcp.auth.context import current_client, current_user_id
+from mezake_mcp.auth.rate_limit import consume_one
 from mezake_mcp.auth.resolver import NoConnectionError, load_client_for_user
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,15 @@ class BearerAuthMiddleware:
             await _send_401(send, str(e))
             return
 
+        # Rate limit AFTER successful auth so unauthenticated traffic
+        # can't exhaust someone else's bucket and so 429 carries a
+        # meaningful per-user accounting.
+        allowed, retry_after = consume_one(user_id)
+        if not allowed:
+            log.info("Rate limit hit for user %s (retry after %.1fs)", user_id, retry_after)
+            await _send_429(send, retry_after)
+            return
+
         token_client = current_client.set(client)
         token_uid = current_user_id.set(user_id)
         try:
@@ -88,6 +98,23 @@ async def _send_401(send, reason: str = "Unauthorized") -> None:
         "headers": [
             (b"content-type", b"application/json"),
             (b"www-authenticate", b'Bearer realm="mcp"'),
+            (b"content-length", str(len(body)).encode()),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _send_429(send, retry_after: float) -> None:
+    body = b'{"error":"rate_limited","error_description":"Too many requests."}'
+    # Cap the Retry-After header at 60s — `inf` (no-refill bucket) and
+    # very large values aren't useful to send to a client.
+    retry_after_secs = 60 if retry_after == float("inf") else max(1, int(retry_after) + 1)
+    await send({
+        "type": "http.response.start",
+        "status": 429,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"retry-after", str(retry_after_secs).encode()),
             (b"content-length", str(len(body)).encode()),
         ],
     })

@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # ── Auth (Phase 4) ────────────────────────────────────────────────────────
     encryption_key: str | None = None
 
+    # ── Rate limiting (Phase 6b) ──────────────────────────────────────────────
+    # Token bucket per authenticated user: `capacity` is the burst size and
+    # `refill_per_second` is the sustained rate. Defaults: 30-call burst
+    # plus 120 calls/min sustained.
+    rate_limit_capacity: int = 30
+    rate_limit_refill_per_second: float = 2.0
+
     @property
     def base_url(self) -> str:
         if self.railway_public_domain in ("localhost", ""):
