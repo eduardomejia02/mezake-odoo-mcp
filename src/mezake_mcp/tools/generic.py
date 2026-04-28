@@ -15,6 +15,12 @@ as `[id, display_name]`; x2many fields as a list of ids; missing
 relational values as `false`. These are Odoo's native wire types — we
 don't reshape them, because Claude already understands them after seeing
 a single response.
+
+Translations: every read/write tool accepts an optional `context`
+parameter. Pass `{"lang": "en_US"}` to read or write a specific
+language for translatable fields (page titles, view arch, product
+names, etc.). Without `lang`, Odoo uses the authenticated user's
+profile language. See `odoo_write` for examples.
 """
 
 from __future__ import annotations
@@ -28,6 +34,13 @@ from mezake_mcp.odoo.client import get_active_client
 
 def _run(model: str, method: str, args: list, kw: dict | None = None) -> Any:
     return get_active_client().execute_kw(model, method, args, kw or {})
+
+
+def _with_context(kw: dict[str, Any], context: dict | None) -> dict[str, Any]:
+    """Add a `context` key to `kw` if the caller provided one."""
+    if context:
+        kw["context"] = context
+    return kw
 
 
 def _dumps(value: Any) -> str:
@@ -69,11 +82,15 @@ def odoo_list_models(name_filter: str = "", limit: int = 200) -> str:
 def odoo_describe_model(model: str, fields: list | None = None) -> str:
     """Return the schema for a model: for every field, the type, required
     flag, readonly flag, help text, selection choices (for selection
-    fields), and the related model name (for relational fields).
+    fields), the related model name (for relational fields), and the
+    `translate` flag.
 
     Always call this before constructing a `search` domain or `create`
     payload against an unfamiliar model — Odoo field names don't always
     match what you'd guess (e.g. `account.move.partner_id`, not `customer`).
+
+    The `translate` flag tells you which fields you can write per-language
+    via the `context={"lang": "en_US"}` parameter on `odoo_write`.
 
     Args:
       model: technical name, e.g. 'account.bank.statement.line'.
@@ -82,6 +99,7 @@ def odoo_describe_model(model: str, fields: list | None = None) -> str:
     attrs = [
         "string", "type", "required", "readonly", "help",
         "selection", "relation", "store", "compute", "related",
+        "translate",
     ]
     schema = _run(model, "fields_get", [fields or []], {"attributes": attrs})
     return _dumps(schema)
@@ -98,6 +116,7 @@ def odoo_search(
     limit: int = 200,
     offset: int = 0,
     order: str = "",
+    context: dict | None = None,
 ) -> str:
     """Return IDs of records matching a domain.
 
@@ -109,10 +128,14 @@ def odoo_search(
       domain: Odoo domain, e.g. [["state","=","posted"],["amount_total",">",100]].
         Empty or omitted returns all records (bounded by `limit`).
       limit, offset, order: standard pagination + sort.
+      context: optional Odoo call context. Use `{"active_test": False}` to
+        include archived records, `{"lang": "en_US"}` to interpret string
+        comparisons in a specific language, etc.
     """
     kw: dict[str, Any] = {"limit": limit, "offset": offset}
     if order:
         kw["order"] = order
+    _with_context(kw, context)
     ids = _run(model, "search", [domain or []], kw)
     return _dumps(ids)
 
@@ -125,6 +148,7 @@ def odoo_search_read(
     limit: int = 50,
     offset: int = 0,
     order: str = "",
+    context: dict | None = None,
 ) -> str:
     """Main read tool. Returns records as JSON.
 
@@ -138,28 +162,40 @@ def odoo_search_read(
       fields: names to include. Omit for Odoo's default set (which skips
         binary/heavy fields). Always narrow to the fields you need — full
         record reads can be large.
+      context: pass `{"lang": "en_US"}` to read translatable fields in a
+        specific language. Without `lang`, Odoo returns the user-profile
+        language. Reading the same record in two languages is the way to
+        confirm a translation actually exists.
     """
     kw: dict[str, Any] = {"limit": limit, "offset": offset}
     if fields:
         kw["fields"] = fields
     if order:
         kw["order"] = order
+    _with_context(kw, context)
     records = _run(model, "search_read", [domain or []], kw)
     return _dumps(records)
 
 
 @mcp.tool()
-def odoo_read(model: str, ids: list, fields: list | None = None) -> str:
+def odoo_read(
+    model: str,
+    ids: list,
+    fields: list | None = None,
+    context: dict | None = None,
+) -> str:
     """Hydrate records by ID. Prefer `odoo_search_read` unless you already
     have IDs in hand.
 
     Args:
       ids: list of integer IDs.
       fields: names to return. Omit for the default set.
+      context: optional Odoo context, e.g. `{"lang": "en_US"}`.
     """
     kw: dict[str, Any] = {}
     if fields:
         kw["fields"] = fields
+    _with_context(kw, context)
     records = _run(model, "read", [ids], kw)
     return _dumps(records)
 
@@ -173,6 +209,7 @@ def odoo_read_group(
     limit: int = 100,
     offset: int = 0,
     orderby: str = "",
+    context: dict | None = None,
 ) -> str:
     """Aggregate / group records — the tool for reports and dashboards.
 
@@ -198,10 +235,12 @@ def odoo_read_group(
         etc., or a plain field name for Odoo's default aggregator.
       groupby: group keys, e.g. ['partner_id'] or ['invoice_date:month'].
       orderby: e.g. 'balance desc'.
+      context: optional Odoo context.
     """
     kw: dict[str, Any] = {"limit": limit, "offset": offset}
     if orderby:
         kw["orderby"] = orderby
+    _with_context(kw, context)
     rows = _run(model, "read_group", [domain or [], fields or [], groupby or []], kw)
     return _dumps(rows)
 
@@ -211,7 +250,7 @@ def odoo_read_group(
 # ════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def odoo_create(model: str, values: dict) -> str:
+def odoo_create(model: str, values: dict, context: dict | None = None) -> str:
     """Create a single record. Returns the new ID as JSON `{"id": N}`.
 
     Call `odoo_describe_model(model)` first to confirm required fields
@@ -224,6 +263,11 @@ def odoo_create(model: str, values: dict) -> str:
           (5, 0)                       — unlink all
           (3, id)                      — unlink just one
 
+    Args:
+      values: field -> value dict.
+      context: optional Odoo context. Pass `{"lang": "en_US"}` to seed
+        translatable fields in a specific language at creation time.
+
     Example:
       odoo_create('res.partner', {
         'name': 'Acme Corp',
@@ -232,23 +276,60 @@ def odoo_create(model: str, values: dict) -> str:
         'category_id': [(6, 0, [7, 11])]   // set tags to 7 and 11
       })
     """
-    new_id = _run(model, "create", [values])
+    kw = _with_context({}, context)
+    new_id = _run(model, "create", [values], kw)
     return _dumps({"id": new_id})
 
 
 @mcp.tool()
-def odoo_write(model: str, ids: list, values: dict) -> str:
+def odoo_write(
+    model: str,
+    ids: list,
+    values: dict,
+    context: dict | None = None,
+) -> str:
     """Update existing records. Applies `values` to every ID in `ids`.
 
     Returns `{"updated": N}` on success.
 
-    Example (reassign two leads to another salesperson + add a tag):
-      odoo_write('crm.lead', [42, 43], {
-        'user_id': 7,
-        'tag_ids': [(4, 12)]
-      })
+    ### Translations (Odoo 17+)
+
+    Translatable fields (`name`, `arch_db`, `description`, etc. — anything
+    `odoo_describe_model` reports with `translate: true`) are stored as
+    JSONB keyed by language code. To write a specific language, pass
+    `context={"lang": "<code>"}`. Without `lang`, the write goes to the
+    *authenticated user's* profile language, which is rarely what you want
+    when seeding translations.
+
+    Translation workflow:
+      1. List installed languages:
+         odoo_search_read('res.lang', [['active','=', true]],
+                          ['code', 'name'])
+      2. Write the source text in the default language:
+         odoo_write('website.page', [42], {'name': 'Acerca de'})
+      3. Write the translation in another language:
+         odoo_write('website.page', [42], {'name': 'About Us'},
+                    context={'lang': 'en_US'})
+      4. Verify by reading both:
+         odoo_read('website.page', [42], ['name'],
+                   context={'lang': 'es_DO'})
+         odoo_read('website.page', [42], ['name'],
+                   context={'lang': 'en_US'})
+
+    Other examples:
+      Reassign two leads to another salesperson + add a tag:
+        odoo_write('crm.lead', [42, 43], {
+          'user_id': 7,
+          'tag_ids': [(4, 12)]
+        })
+
+      Translate a website view's HTML body to English:
+        odoo_write('ir.ui.view', [view_id],
+                   {'arch_db': '<English QWeb>'},
+                   context={'lang': 'en_US'})
     """
-    _run(model, "write", [ids, values])
+    kw = _with_context({}, context)
+    _run(model, "write", [ids, values], kw)
     return _dumps({"updated": len(ids)})
 
 
@@ -283,6 +364,9 @@ def odoo_call(
     IMPORTANT: for recordset methods (most buttons / workflow actions),
     the first element of `args` must itself be a LIST of IDs — that's
     why you often see `[[42]]`.
+
+    For Odoo's call context (lang, allowed_company_ids, active_test, …),
+    pass it under `kwargs` as `{"context": {"lang": "en_US"}}`.
 
     Common patterns:
       Post an invoice:

@@ -133,13 +133,20 @@ class OdooClient:
     ) -> Any:
         """Run `model.method(*args, **kw)` via XML-RPC.
 
-        Automatically attaches the company context and retries exactly
-        once on UID rejection (e.g. after an API-key rotation).
+        Automatically attaches the company context. If the caller passes
+        their own `context` (e.g. `{"lang": "en_US"}` for translations),
+        it's MERGED with the company context — caller wins on conflicts,
+        but `allowed_company_ids` is preserved unless the caller
+        explicitly overrides it.
+
+        Retries exactly once on UID rejection (e.g. after an API-key rotation).
         """
         kw = dict(kw) if kw else {}
-        ctx = self.context()
-        if ctx:
-            kw.setdefault("context", ctx)
+        deployment_ctx = self.context()
+        caller_ctx = kw.get("context") or {}
+        merged_ctx = {**deployment_ctx, **caller_ctx}
+        if merged_ctx:
+            kw["context"] = merged_ctx
         obj = self._object_proxy()
 
         for attempt in (0, 1):
