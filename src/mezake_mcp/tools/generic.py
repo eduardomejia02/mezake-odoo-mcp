@@ -334,6 +334,75 @@ def odoo_write(
 
 
 @mcp.tool()
+def odoo_translate_field(
+    model: str,
+    record_ids: list,
+    field: str,
+    translations: dict,
+) -> str:
+    """Update per-language translations of a translatable field WITHOUT
+    rewriting the source-language content. This is the right tool for
+    QWeb view bodies (`ir.ui.view.arch_db`), product names, blog posts,
+    snippet text — anything where you want to add English translations
+    on top of an existing Spanish (or other source-language) record.
+
+    Why this exists separately from `odoo_write`:
+
+    For simple translatable fields (`name`, `description`, etc.),
+    `odoo_write(model, ids, values, context={"lang": "<code>"})` works
+    fine — it just writes the new value to that language's slot in the
+    JSONB.
+
+    For QWeb view bodies (`arch_db`), the same approach is dangerous.
+    Odoo aligns translatable strings between the new and source-language
+    XML by tree position. A structural mismatch (one extra div, a
+    different class) corrupts translations across BOTH languages. This
+    tool calls Odoo's purpose-built `update_field_translations` method
+    which operates string-by-string and never touches XML structure.
+
+    Args:
+      model: technical name, e.g. 'ir.ui.view', 'product.template'.
+      record_ids: list of integer record IDs to translate.
+      field: technical field name, e.g. 'arch_db', 'name', 'description'.
+        Must be a translatable field (`translate: true` in
+        `odoo_describe_model`).
+      translations: dict keyed by language code. Each value is itself a
+        dict mapping the source-language text to the translation.
+
+    Examples:
+
+      Translate two strings in a Spanish website page to English:
+        odoo_translate_field('ir.ui.view', [view_id], 'arch_db', {
+          'en_US': {
+            'Acerca de': 'About Us',
+            'Nuestra historia': 'Our Story',
+            'Contacto': 'Contact',
+          }
+        })
+
+      Translate a product name into multiple languages:
+        odoo_translate_field('product.template', [42], 'name', {
+          'en_US': {'Cantina Redonda 750 ml': 'Round Canteen 750 ml'},
+          'fr_FR': {'Cantina Redonda 750 ml': 'Bidon Rond 750 ml'},
+        })
+
+    Returns the underlying call's result as JSON (typically `true`).
+
+    Workflow tip: read the source-language field first to see exactly
+    which strings are translatable in this view, then map each one to
+    its translation. Don't try to write back the full HTML — feed only
+    the individual strings.
+    """
+    kw: dict[str, Any] = {}
+    result = _run(
+        model, "update_field_translations",
+        [record_ids, field, translations],
+        kw,
+    )
+    return _dumps(result)
+
+
+@mcp.tool()
 def odoo_unlink(model: str, ids: list) -> str:
     """Delete records. This is destructive — only call with explicit
     user confirmation in the conversation. Returns `{"deleted": N}`.

@@ -59,6 +59,7 @@ TOOL_CATEGORY: dict[str, str] = {
     "odoo_read_group": READ,
     "odoo_create": WRITE,
     "odoo_write": WRITE,
+    "odoo_translate_field": WRITE,
     "odoo_unlink": DELETE,
     # `odoo_call` is the catch-all — it can confirm an invoice or unlink a
     # record. Bucket as WRITE; users on the read-only plan can't reach it,
